@@ -53,6 +53,9 @@ class AgentRunner:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-run")
         self._lock = threading.Lock()
         self._current: tuple[int, Any] | None = None
+        self._active_task_id: int | None = None
+        self.task_listeners: list[Callable[[int, str, str | None], None]] = []
+        self.confirmation_listeners: list[Callable[[int, str], None]] = []
         self._search_fn = search_fn or (
             lambda query, count: default_search(query, count, settings.web_search_timeout)
         )
@@ -62,6 +65,7 @@ class AgentRunner:
         self._agent_factory = agent_factory or self._build_agent
 
     def _build_agent(self) -> ToolCallingAgent:
+        active_task_id = self._active_task_id
         deps = ToolDeps(
             storage=self.storage,
             notifier=self.notifier,
@@ -72,6 +76,11 @@ class AgentRunner:
             files_max_bytes=self.settings.files_max_bytes,
             files_max_entries=self.settings.files_max_entries,
             web_fetch_max_chars=self.settings.web_fetch_max_chars,
+            request_confirmation=(
+                (lambda kind, payload: self.request_confirmation(active_task_id, kind, payload))
+                if active_task_id is not None
+                else None
+            ),
         )
         tools = filter_tools(build_tools(deps))
         model = RoutedModel(
@@ -91,13 +100,153 @@ class AgentRunner:
         self._executor.submit(self._run_task, task_id, prompt, chat_id)
         return task_id
 
+    def submit_existing(self, task_id: int, prompt: str, chat_id: int | None = None) -> None:
+        """Queue a task row that already exists (used by the workflow engine)."""
+        self._executor.submit(self._run_task, task_id, prompt, chat_id)
+
+    def add_task_listener(self, listener: Callable[[int, str, str | None], None]) -> None:
+        self.task_listeners.append(listener)
+
+    def add_confirmation_listener(self, listener: Callable[[int, str], None]) -> None:
+        self.confirmation_listeners.append(listener)
+
+    def notify(self, text: str) -> None:
+        """Public notification path (shared with the workflow engine)."""
+        self._notify(text)
+
+    def _emit_task(self, task_id: int, status: str, result: str | None) -> None:
+        for listener in list(self.task_listeners):
+            try:
+                listener(task_id, status, result)
+            except Exception:
+                logger.warning("task listener failed for task %s", task_id, exc_info=True)
+
+    def _emit_confirmation(self, confirmation_id: int, decision: str) -> None:
+        for listener in list(self.confirmation_listeners):
+            try:
+                listener(confirmation_id, decision)
+            except Exception:
+                logger.warning(
+                    "confirmation listener failed for confirmation %s",
+                    confirmation_id,
+                    exc_info=True,
+                )
+
+    def resume(self) -> dict[str, int]:
+        """Restart recovery: requeue work left behind by a previous process.
+
+        Safety against double execution relies on the atomic reservation in
+        ``Storage.mark_running`` (UPDATE ... WHERE status = 'PENDING'): whoever
+        flips the row first runs the task, any other queued attempt skips it.
+        """
+        recovery = self.storage.reset_interrupted_tasks()
+        pending = self.storage.list_pending_tasks()
+        for row in pending:
+            self._executor.submit(self._run_task, int(row["id"]), row["prompt"], row["chat_id"])
+        stats = {
+            "requeued_running": recovery["requeued"],
+            "cancelled_running": recovery["cancelled"],
+            "resumed_pending": len(pending),
+        }
+        if any(stats.values()):
+            logger.info(
+                "resume: %s running requeued, %s running cancelled, %s pending resubmitted",
+                stats["requeued_running"],
+                stats["cancelled_running"],
+                stats["resumed_pending"],
+            )
+        return stats
+
+    def request_confirmation(self, task_id: int, kind: str, payload: str) -> int | None:
+        """Park a RUNNING task until the operator approves or rejects the pending action.
+
+        Returns the confirmation id, or None when the task is not RUNNING
+        (a sensitive action can never be requested outside a live run).
+        """
+        if not self.storage.hold_task(task_id):
+            logger.warning("confirmation refused: task %s is not running", task_id)
+            return None
+        confirmation_id = self.storage.create_confirmation(kind, payload, task_id=task_id)
+        self._notify(
+            f"Confirmation #{confirmation_id} required ({kind}): {payload}\n"
+            f"Approve with /approve {confirmation_id} or reject with /reject {confirmation_id}"
+        )
+        return confirmation_id
+
+    def expire_stale_confirmations(self, cutoff_iso: str) -> int:
+        """Expire every confirmation older than ``cutoff_iso`` (full path: listeners + tasks)."""
+        expired = 0
+        for row in self.storage.list_confirmations(limit=500, status="PENDING"):
+            if str(row["created_at"]) < cutoff_iso:
+                ok, _ = self.expire_confirmation(int(row["id"]))
+                if ok:
+                    expired += 1
+        return expired
+
+    def resolve_confirmation(self, confirmation_id: int, decision: str) -> tuple[bool, str]:
+        """Approve or reject a pending confirmation (APPROVED / REJECTED).
+
+        Thread-safe: Telegram handlers must call it through ``asyncio.to_thread``
+        so notifications never block the event loop.
+        """
+        confirmation = self.storage.get_confirmation(confirmation_id)
+        if confirmation is None:
+            return False, "unknown_confirmation"
+        if decision not in ("APPROVED", "REJECTED"):
+            return False, "invalid_decision"
+        if not self.storage.decide_confirmation(confirmation_id, decision):
+            return False, f"already_{confirmation['status'].lower()}"
+        self._emit_confirmation(confirmation_id, decision)
+        reason = decision.lower()
+        task_id = confirmation.get("task_id")
+        if task_id:
+            task = self.storage.get_task(task_id)
+            if task and task["status"] == TaskStatus.WAITING_CONFIRMATION.value:
+                if decision == "APPROVED":
+                    if self.storage.release_task(task_id, TaskStatus.PENDING):
+                        self._executor.submit(
+                            self._run_task, task_id, task["prompt"], task["chat_id"]
+                        )
+                        self._notify(
+                            f"Confirmation #{confirmation_id} approved: resuming task #{task_id}."
+                        )
+                else:
+                    if self.storage.release_task(
+                        task_id, TaskStatus.CANCELLED, error="confirmation rejected"
+                    ):
+                        self._notify(
+                            f"Confirmation #{confirmation_id} rejected: task #{task_id} cancelled."
+                        )
+        return True, reason
+
+    def expire_confirmation(self, confirmation_id: int) -> tuple[bool, str]:
+        """Expire a pending confirmation; a waiting task is cancelled with it."""
+        confirmation = self.storage.get_confirmation(confirmation_id)
+        if confirmation is None:
+            return False, "unknown_confirmation"
+        if not self.storage.expire_confirmation(confirmation_id):
+            return False, f"already_{confirmation['status'].lower()}"
+        self._emit_confirmation(confirmation_id, "EXPIRED")
+        task_id = confirmation.get("task_id")
+        if task_id:
+            task = self.storage.get_task(task_id)
+            if (
+                task
+                and task["status"] == TaskStatus.WAITING_CONFIRMATION.value
+                and self.storage.release_task(task_id, TaskStatus.CANCELLED, error="confirmation expired")
+            ):
+                self._notify(f"Confirmation #{confirmation_id} expired: task #{task_id} cancelled.")
+        return True, "expired"
+
     def _run_task(self, task_id: int, prompt: str, chat_id: int | None) -> None:
         if not self.storage.mark_running(task_id):
             logger.info("task %s skipped: no longer pending", task_id)
             return
         agent: Any = None
         try:
+            self._active_task_id = task_id
             agent = self._agent_factory()
+            self._active_task_id = None
             with self._lock:
                 self._current = (task_id, agent)
             if self.storage.is_cancel_requested(task_id):
@@ -110,6 +259,7 @@ class AgentRunner:
             self.storage.add_message("user", prompt, chat_id=chat_id, task_id=task_id)
             self.storage.add_message("assistant", text, chat_id=chat_id, task_id=task_id)
             if self.storage.finish_task(task_id, TaskStatus.SUCCESS, result=text):
+                self._emit_task(task_id, "SUCCESS", text)
                 self._notify(f"Task #{task_id} completed\n{text}")
             else:
                 logger.info("task %s finished but was already terminal", task_id)
@@ -118,14 +268,17 @@ class AgentRunner:
             cancelled = self.storage.is_cancel_requested(task_id)
             if cancelled:
                 self.storage.finish_task(task_id, TaskStatus.CANCELLED, error=detail)
+                self._emit_task(task_id, "CANCELLED", detail)
                 self._notify(f"Task #{task_id} cancelled.")
                 logger.info("task %s cancelled: %s", task_id, detail)
             else:
                 self.storage.finish_task(task_id, TaskStatus.FAILED, error=detail)
                 self.storage.add_incident("agent", f"task {task_id} failed", detail)
+                self._emit_task(task_id, "FAILED", detail)
                 self._notify(f"Task #{task_id} failed: {detail}")
                 logger.warning("task %s failed: %s", task_id, detail)
         finally:
+            self._active_task_id = None
             with self._lock:
                 self._current = None
 

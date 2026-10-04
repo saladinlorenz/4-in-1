@@ -65,7 +65,8 @@ Example missions:
           │ - HTTP fetch      │    │ - Memory              │
           │ - Files           │    │ - Tasks               │
           │ - Telegram        │    │ - Drafts              │
-          │ - Social (V3)     │    │ - Incidents           │
+          │ - Social          │    │ - Confirmations       │
+          │ - Status          │    │ - Workflows           │
           └───────────────────┘    └──────────────────────┘
 ```
 
@@ -120,10 +121,10 @@ Key modules:
 
 | Module | Role |
 |---|---|
-| `agent/core.py` | `AgentRunner`: submit, status, cancel, single active task, interrupt switch |
+| `agent/core.py` | `AgentRunner`: submit, status, cancel, confirmations, resume, single active task, listeners |
 | `agent/model_router.py` | `RoutedModel(smolagents.Model)` bridging to the endpoint router |
 | `agent/permissions.py` | Allow-lists and action policies |
-| `agent/tools/` | The nine registered tools (see below) |
+| `agent/tools/` | The twelve registered tools (see below) |
 
 ### freellmapi-python adapter
 
@@ -156,7 +157,7 @@ This layer provides:
 
 ### Task store
 
-Long-running or scheduled tasks are recorded in SQLite and survive a restart. The phase 1 store implements the task lifecycle (`PENDING`, `RUNNING`, `SUCCESS`, `FAILED`, `CANCELLED`) plus retry counters, errors, and timestamps. Scheduling, backoff retries, and restart re-queue arrive in V2.
+Long-running or scheduled tasks are recorded in SQLite and survive a restart. The store implements the task lifecycle (`PENDING`, `RUNNING`, `WAITING_CONFIRMATION`, `SUCCESS`, `FAILED`, `CANCELLED`) plus retry counters, errors, and timestamps. Phase 2 added restart recovery (interrupted tasks are re-queued on boot), confirmation holds, workflow runs with step retries, and scheduled jobs.
 
 Each task carries at least:
 
@@ -191,7 +192,9 @@ Tools are plain Python functions independent of the framework, registered throug
 | `get_status` | implemented | Report agent, task, and endpoint status |
 | `model_generate` | planned (V2) | Direct model call via freellmapi |
 | `workflow_create` / `workflow_run` / `workflow_status` | planned (V2) | Persistent workflow control |
-| `social_create_draft` / `social_schedule` / `social_publish` | planned (V3) | Social draft and publishing flow |
+| `social_create_draft` | implemented | Create or deduplicate a social draft |
+| `social_publish` | implemented | Request publication, approved via Telegram |
+| `social_list_drafts` | implemented | List drafts with status and schedule |
 
 ***
 
@@ -219,16 +222,20 @@ API response verification
 Status update + notification
 ```
 
-Planned features:
+Implemented:
 
-- draft creation;
-- SQLite editorial calendar;
+- draft creation with duplicate prevention;
+- editorial scheduling fields (`scheduled_for`);
+- publication history and statuses (`DRAFT`, `PUBLISHED`, `FAILED`);
+- validation through Telegram (`/approve`, `/reject`);
+- publication through a connected platform adapter;
+- status tracking and redacted failure reporting;
+- no simulated publication: no adapter, no publication.
+
+Planned:
+
 - content templates;
-- publication history;
-- validation through Telegram;
-- publication through adapters;
-- status tracking;
-- duplicate prevention.
+- DEV.to, Bluesky, LinkedIn and further adapters.
 
 Integration priority:
 
@@ -256,13 +263,13 @@ Implemented commands:
 | `/ask <mission>` | Submit a mission to the agent |
 | `/tasks` | List recent tasks with their states |
 | `/cancel <id>` | Cancel a running or pending task |
+| `/approve <id>` | Approve a pending confirmation (publication, workflow step) |
+| `/reject <id>` | Reject a confirmation, cancelling the parked task |
 
 Planned commands:
 
 ```text
 /task <id>
-/approve <id>
-/reject <id>
 /memory <query>
 /workflows
 ```
@@ -296,14 +303,16 @@ storage/
 └── exports/
 ```
 
-The database currently stores:
+The database currently stores (10 tables):
 
 - messages (conversation history);
 - tasks (status, retries, results);
 - incidents (errors and diagnostics);
-- confirmations (approval workflow);
-- drafts (social drafts, V3);
-- memory (long-term knowledge).
+- confirmations (approval workflow with TTL);
+- drafts (social drafts);
+- memory (long-term knowledge);
+- workflows, workflow_runs, workflow_steps (persistent workflow engine);
+- scheduled_jobs (idempotency keys for cron triggers).
 
 Secrets are never stored in plain text in SQLite. They are provided through environment variables or a protected local store. The whole `storage/` directory is git-ignored.
 
@@ -320,15 +329,17 @@ Implemented:
 - endpoint cooldown after repeated failures;
 - failure classification (`retryable`, `auth`, `quota`, `fatal`);
 - persistent tasks and results in SQLite;
+- restart recovery: interrupted tasks re-queued, half-finished runs reported;
+- idempotency keys for workflows and scheduled runs (no duplicates after restart);
+- stuck-task supervisor (`STUCK_TASK_HOURS`) with incident logging;
+- confirmation TTL (`CONFIRMATION_TTL_HOURS`) with expiry sweep;
+- workflow step retries with backoff (`WORKFLOW_RETRY_LIMIT`);
 - clean shutdown on `SIGINT` and `SIGTERM`;
 - health checks (`/health`, `/api/status`);
 - incident logging with redacted messages.
 
 Planned:
 
-- restart re-queue of `RUNNING` tasks;
-- idempotency keys to prevent duplicates;
-- stuck-task detection;
 - external supervision through the Android VPS engine (`scripts/run.sh`).
 
 ***
@@ -410,7 +421,7 @@ cp .env.example .env               # then edit .env
 python scripts/check_env.py
 
 # 5. Run the test suite and the linter
-python -m pytest                   # 66 tests, no network, no API keys
+python -m pytest                   # 107 tests, no network, no API keys
 python -m ruff check . tests scripts
 
 # 6. Start AgentOS
@@ -422,6 +433,7 @@ Once running:
 ```text
 Health:   http://127.0.0.1:8080/health
 Status:   http://127.0.0.1:8080/api/status
+Local API: http://127.0.0.1:8080/api/tasks|incidents|memory|drafts|confirmations
 Telegram: send /status or /ask <mission> to your bot
 Stop:     Ctrl+C (SIGINT) or SIGTERM for a clean shutdown
 ```
@@ -438,6 +450,10 @@ Stop:     Ctrl+C (SIGINT) or SIGTERM for a clean shutdown
 | `TELEGRAM_ADMIN_CHAT_ID` | Default chat for alerts |
 | `TELEGRAM_ALLOWED_USER_IDS` | Comma-separated or JSON list of authorized user IDs |
 | `HEALTH_HOST`, `HEALTH_PORT` | Local health endpoint (defaults `127.0.0.1:8080`) |
+| `WORKFLOW_RETRY_LIMIT`, `WORKFLOW_RETRY_BACKOFF_BASE` | Step retries for workflow runs |
+| `SCHEDULER_ENABLED`, `SCHEDULER_TIMEZONE` | Cron triggers on/off and timezone |
+| `CONFIRMATION_TTL_HOURS` | Pending confirmations expire after this TTL (default 24) |
+| `STUCK_TASK_HOURS` | Supervisor reports tasks running longer than this (default 2) |
 | `LOG_LEVEL` | Logging verbosity |
 
 ***
@@ -452,13 +468,13 @@ python-telegram-bot   Telegram interface
 pydantic              validation
 pydantic-settings     settings / .env loading
 python-dotenv         dotenv support
+APScheduler           cron triggers (execution stays in SQLite)
 pytest, ruff          tests and linting
 ```
 
 Planned for later phases:
 
 ```text
-APScheduler     scheduling (V2)
 aiosqlite       async SQLite access (V2)
 tenacity        retry helpers (V2)
 ```
@@ -483,7 +499,7 @@ tenacity        retry helpers (V2)
 │   └── logging.py              logging setup with file + console
 │
 ├── agent/
-│   ├── core.py                 AgentRunner: submit/status/cancel
+│   ├── core.py                 AgentRunner: submit/status/cancel/confirmations
 │   ├── model_router.py         RoutedModel bridge to smolagents
 │   ├── permissions.py          action policies and allow-lists
 │   └── tools/                  the registered agent tools
@@ -492,7 +508,17 @@ tenacity        retry helpers (V2)
 │       ├── files.py
 │       ├── memory.py
 │       ├── status.py
+│       ├── social.py           social drafts and publishing flow
 │       └── base.py
+│
+├── workflows/
+│   ├── engine.py               SQLite workflow runs/steps + retries
+│   ├── scheduler.py            APScheduler cron triggers -> enqueue
+│   └── definitions.py          daily news / daily report workflows
+│
+├── social/
+│   ├── service.py              draft lifecycle, approval-driven publishing
+│   └── adapters/               TelegramAdapter (real API publication)
 │
 ├── freellmapi_adapter/
 │   ├── provider.py             single endpoint call + retries
@@ -500,7 +526,7 @@ tenacity        retry helpers (V2)
 │   └── fallback.py             failure classification
 │
 ├── memory/
-│   ├── sqlite_store.py         schema + CRUD (6 tables)
+│   ├── sqlite_store.py         schema + CRUD (10 tables)
 │   └── search.py               memory search helpers
 │
 ├── telegram_bot/
@@ -508,13 +534,13 @@ tenacity        retry helpers (V2)
 │   └── notifier.py             Telegram and log notifiers
 │
 ├── dashboard/
-│   └── app.py                  local health HTTP server
+│   └── app.py                  local HTTP server (health + local API)
 │
 ├── scripts/
 │   ├── check_env.py            environment verification
 │   └── run.sh                  process supervision helper
 │
-├── tests/                      66 unit tests (mocked network)
+├── tests/                      107 unit tests (mocked network)
 │
 ├── storage/                    runtime data (git-ignored)
 │
@@ -538,31 +564,32 @@ tenacity        retry helpers (V2)
 - [x] Persistent memory
 - [x] Telegram bot (`/start`, `/help`, `/status`, `/ask`, `/tasks`, `/cancel`)
 - [x] Health check (`/health`, `/api/status`)
-- [x] Unit tests (66) and linting (ruff)
+- [x] Unit tests and linting (ruff)
 
 ### V2 — Durable workflows
 
-- [ ] SQLite task queue with scheduler (APScheduler)
-- [ ] Retries and backoff for tasks
-- [ ] Recovery after restart
-- [ ] Cancellation of scheduled work
-- [ ] Incidents and diagnostics endpoints
-- [ ] Scheduled Telegram reports
+- [x] SQLite task queue with scheduler (APScheduler)
+- [x] Retries and backoff for tasks (workflow step retries)
+- [x] Recovery after restart
+- [x] Cancellation of scheduled work
+- [x] Incidents and diagnostics endpoints
+- [x] Scheduled Telegram reports (daily AI news, daily report)
 - [ ] `model_generate`, `workflow_*` tools
 
 ### V3 — Social management
 
-- [ ] Social drafts
-- [ ] Telegram validation flow (`/approve`, `/reject`)
-- [ ] Editorial calendar
-- [ ] Telegram adapter
+- [x] Social drafts
+- [x] Telegram validation flow (`/approve`, `/reject`)
+- [ ] Editorial calendar view (scheduling fields stored, no dedicated view yet)
+- [x] Telegram adapter (first real publication platform)
 - [ ] DEV.to adapter
 - [ ] Bluesky adapter
 - [ ] LinkedIn adapter
-- [ ] Publication history and statuses
+- [x] Publication history and statuses
 
 ### V4 — Local interface
 
+- [x] Local API routes (tasks, incidents, memory, drafts, confirmations, cancel, decisions)
 - [ ] Local FastAPI API
 - [ ] Localhost dashboard
 - [ ] Task list UI

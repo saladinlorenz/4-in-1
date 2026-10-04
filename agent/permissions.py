@@ -13,6 +13,9 @@ ALLOWED_TOOL_NAMES = frozenset(
         "search_memory",
         "send_notification",
         "get_status",
+        "social_create_draft",
+        "social_publish",
+        "social_list_drafts",
         "final_answer",
     }
 )

@@ -21,3 +21,4 @@ class ToolDeps:
     files_max_bytes: int = 200_000
     files_max_entries: int = 200
     web_fetch_max_chars: int = 20_000
+    request_confirmation: Callable[[str, str], int | None] | None = None

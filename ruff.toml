@@ -1,4 +1,19 @@
 line-length = 110
 
+extend-exclude = [
+    ".venv",
+    "storage",
+    "__pycache__",
+    "apscheduler-master",
+    "brightbean-studio-main",
+    "ddgs-main",
+    "freellmapi-python-main",
+    "httpx-master",
+    "prefect-main",
+    "python-telegram-bot-master",
+    "smolagents-main",
+    "smolclaw-main",
+]
+
 [lint]
 select = ["E4", "E7", "E9", "F", "I", "UP", "SIM", "RUF"]

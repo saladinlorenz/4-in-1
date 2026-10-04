@@ -93,7 +93,7 @@ def test_register_handlers_registers_all_commands(settings, storage, notifier):
     app = build_application(settings)
     register_handlers(app, runner, storage, settings)
 
-    for command in ("start", "help", "status", "ask", "tasks", "cancel"):
+    for command in ("start", "help", "status", "ask", "tasks", "cancel", "approve", "reject"):
         find_handler(app, command)
     runner.shutdown()
 
@@ -158,4 +158,56 @@ def test_status_and_ask_handlers_for_authorized_user(settings, storage, notifier
     assert runner.wait_idle(timeout=30)
     assert storage.get_task(1)["status"] == "SUCCESS"
     assert storage.get_task(1)["result"] == "tout va bien"
+    runner.shutdown()
+
+
+def test_approve_and_reject_handlers(settings, storage, notifier, monkeypatch):
+    runner = AgentRunner(
+        settings,
+        storage,
+        FakeRouter(responses=[final_answer_payload("done")]),
+        notifier,
+        search_fn=lambda query, count: [],
+        fetch_fn=lambda url: "fetched",
+    )
+    task_id = storage.create_task("sensitive")
+    storage.mark_running(task_id)
+    confirm_id = storage.create_confirmation("publish_draft", "draft#7", task_id=task_id)
+    storage.hold_task(task_id)
+
+    app = build_application(settings)
+    register_handlers(app, runner, storage, settings)
+
+    replies: list[str] = []
+
+    async def fake_reply(self, text=None, *args, **kwargs):
+        replies.append(str(text))
+
+    monkeypatch.setattr(Message, "reply_text", fake_reply)
+    context = ContextTypes.DEFAULT_TYPE(app)
+
+    approve_handler = find_handler(app, "approve")
+    context.args = [str(confirm_id)]
+    asyncio.run(
+        approve_handler.callback(
+            make_update(app.bot, 42, f"/approve {confirm_id}"), context
+        )
+    )
+    assert any(f"Confirmation #{confirm_id}: accepted (approved)" in r for r in replies)
+    assert storage.get_confirmation(confirm_id)["status"] == "APPROVED"
+    assert runner.wait_idle(timeout=30)
+    assert storage.get_task(task_id)["status"] == "SUCCESS"
+
+    replies.clear()
+    reject_handler = find_handler(app, "reject")
+    context.args = [str(confirm_id)]
+    asyncio.run(
+        reject_handler.callback(make_update(app.bot, 42, f"/reject {confirm_id}"), context)
+    )
+    assert any(f"Confirmation #{confirm_id}: refused (already_approved)" in r for r in replies)
+
+    replies.clear()
+    context.args = ["not-a-number"]
+    asyncio.run(approve_handler.callback(make_update(app.bot, 42, "/approve x"), context))
+    assert any("confirmation_id must be a number" in r for r in replies)
     runner.shutdown()

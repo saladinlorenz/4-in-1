@@ -1,3 +1,3 @@
-from .app import HealthServer
+from .app import HealthServer, LocalApi
 
-__all__ = ["HealthServer"]
+__all__ = ["HealthServer", "LocalApi"]

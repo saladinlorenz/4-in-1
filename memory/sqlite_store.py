@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS confirmations (
     payload TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'PENDING'
         CHECK (status IN ('PENDING','APPROVED','REJECTED','EXPIRED')),
-    decided_at TEXT
+    decided_at TEXT,
+    task_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS drafts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,6 +68,53 @@ CREATE TABLE IF NOT EXISTS memory (
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 CREATE INDEX IF NOT EXISTS idx_incidents_created ON incidents(created_at);
+CREATE TABLE IF NOT EXISTS workflows (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    name TEXT NOT NULL UNIQUE,
+    steps TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS workflow_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    workflow_id INTEGER NOT NULL,
+    workflow_name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING'
+        CHECK (status IN ('PENDING','RUNNING','WAITING_CONFIRMATION','SUCCESS','FAILED','CANCELLED')),
+    current_step INTEGER NOT NULL DEFAULT 0,
+    context TEXT NOT NULL DEFAULT '',
+    result TEXT,
+    error TEXT,
+    idempotency_key TEXT
+);
+CREATE TABLE IF NOT EXISTS workflow_steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    run_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'agent',
+    status TEXT NOT NULL DEFAULT 'PENDING'
+        CHECK (status IN ('PENDING','RUNNING','SUCCESS','FAILED','CANCELLED')),
+    task_id INTEGER,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    result TEXT,
+    last_error TEXT,
+    UNIQUE(run_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_runs_status ON workflow_runs(status);
+CREATE INDEX IF NOT EXISTS idx_steps_task ON workflow_steps(task_id);
+CREATE TABLE IF NOT EXISTS scheduled_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    name TEXT NOT NULL UNIQUE,
+    workflow_name TEXT NOT NULL,
+    cron TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_enqueued_at TEXT
+);
 """
 
 
@@ -108,6 +156,11 @@ class Storage:
     def init_schema(self) -> None:
         with self._conn() as connection:
             connection.executescript(SCHEMA)
+            confirmation_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(confirmations)")
+            }
+            if "task_id" not in confirmation_columns:
+                connection.execute("ALTER TABLE confirmations ADD COLUMN task_id INTEGER")
 
     def ping(self) -> bool:
         try:
@@ -169,6 +222,30 @@ class Storage:
         rows = self._conn().execute("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status").fetchall()
         return {row["status"]: row["n"] for row in rows}
 
+    def reset_interrupted_tasks(self) -> dict[str, int]:
+        """Startup recovery: RUNNING rows cannot have a live process after a restart.
+
+        Two atomic updates act as the reservation lock for recovery:
+        - a RUNNING task the user asked to cancel becomes CANCELLED (the cancel wins);
+        - any other RUNNING task goes back to PENDING so the worker can pick it up.
+        Terminal states (SUCCESS/FAILED/CANCELLED) are never touched.
+        """
+        now = utc_now()
+        with self._conn() as connection:
+            cancelled = connection.execute(
+                "UPDATE tasks SET status = ?, cancel_requested = 1, finished_at = ?"
+                " WHERE status = ? AND cancel_requested = 1",
+                (TaskStatus.CANCELLED.value, now, TaskStatus.RUNNING.value),
+            ).rowcount
+            requeued = connection.execute(
+                "UPDATE tasks SET status = ?, started_at = NULL WHERE status = ?",
+                (TaskStatus.PENDING.value, TaskStatus.RUNNING.value),
+            ).rowcount
+        return {"cancelled": cancelled, "requeued": requeued}
+
+    def list_pending_tasks(self, limit: int = 200) -> list[dict[str, Any]]:
+        return self.list_tasks(limit, status=TaskStatus.PENDING.value)
+
     def mark_running(self, task_id: int) -> bool:
         with self._conn() as connection:
             cursor = connection.execute(
@@ -212,6 +289,26 @@ class Storage:
                     (task_id, TaskStatus.RUNNING.value),
                 )
             return True, "interrupt_requested"
+        if status == TaskStatus.WAITING_CONFIRMATION.value:
+            now = utc_now()
+            with self._conn() as connection:
+                cursor = connection.execute(
+                    "UPDATE tasks SET status = ?, cancel_requested = 1, error = ?, finished_at = ?"
+                    " WHERE id = ? AND status = ?",
+                    (
+                        TaskStatus.CANCELLED.value,
+                        "cancelled while waiting for confirmation",
+                        now,
+                        task_id,
+                        TaskStatus.WAITING_CONFIRMATION.value,
+                    ),
+                )
+                connection.execute(
+                    "UPDATE confirmations SET status = 'EXPIRED', decided_at = ?"
+                    " WHERE task_id = ? AND status = 'PENDING'",
+                    (now, task_id),
+                )
+            return cursor.rowcount == 1, "cancelled_while_waiting"
         return False, f"already_{status.lower()}"
 
     def is_cancel_requested(self, task_id: int) -> bool:
@@ -286,13 +383,84 @@ class Storage:
         row = self._conn().execute("SELECT * FROM drafts WHERE id = ?", (draft_id,)).fetchone()
         return dict(row) if row else None
 
-    def create_confirmation(self, kind: str, payload: str) -> int:
+    def find_draft(self, platform: str, content: str) -> dict[str, Any] | None:
+        row = self._conn().execute(
+            "SELECT * FROM drafts WHERE platform = ? AND content = ? ORDER BY id DESC LIMIT 1",
+            (platform, content),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def update_draft(self, draft_id: int, **fields: Any) -> bool:
+        allowed = {"status", "scheduled_for", "published_at", "error"}
+        return self._update_row("drafts", draft_id, fields, allowed)
+
+    def hold_task(self, task_id: int) -> bool:
+        """RUNNING -> WAITING_CONFIRMATION (the agent pauses on a sensitive action)."""
         with self._conn() as connection:
             cursor = connection.execute(
-                "INSERT INTO confirmations (created_at, kind, payload) VALUES (?, ?, ?)",
-                (utc_now(), kind, payload),
+                "UPDATE tasks SET status = ? WHERE id = ? AND status = ?",
+                (TaskStatus.WAITING_CONFIRMATION.value, task_id, TaskStatus.RUNNING.value),
+            )
+            return cursor.rowcount == 1
+
+    def release_task(
+        self,
+        task_id: int,
+        status: TaskStatus,
+        *,
+        result: str | None = None,
+        error: str | None = None,
+    ) -> bool:
+        """WAITING_CONFIRMATION -> PENDING (resume) or a terminal state."""
+        with self._conn() as connection:
+            if status == TaskStatus.PENDING:
+                cursor = connection.execute(
+                    "UPDATE tasks SET status = ?, started_at = NULL WHERE id = ? AND status = ?",
+                    (TaskStatus.PENDING.value, task_id, TaskStatus.WAITING_CONFIRMATION.value),
+                )
+            else:
+                cursor = connection.execute(
+                    "UPDATE tasks SET status = ?, result = ?, error = ?, finished_at = ?"
+                    " WHERE id = ? AND status = ?",
+                    (
+                        status.value,
+                        result,
+                        error,
+                        utc_now(),
+                        task_id,
+                        TaskStatus.WAITING_CONFIRMATION.value,
+                    ),
+                )
+            return cursor.rowcount == 1
+
+    def create_confirmation(
+        self,
+        kind: str,
+        payload: str,
+        task_id: int | None = None,
+    ) -> int:
+        with self._conn() as connection:
+            cursor = connection.execute(
+                "INSERT INTO confirmations (created_at, kind, payload, task_id) VALUES (?, ?, ?, ?)",
+                (utc_now(), kind, payload, task_id),
             )
             return int(cursor.lastrowid)
+
+    def get_confirmation(self, confirmation_id: int) -> dict[str, Any] | None:
+        row = self._conn().execute(
+            "SELECT * FROM confirmations WHERE id = ?", (confirmation_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_confirmations(self, limit: int = 10, status: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM confirmations"
+        params: list[Any] = []
+        if status:
+            query += " WHERE status = ?"
+            params.append(status)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        return [dict(row) for row in self._conn().execute(query, params).fetchall()]
 
     def decide_confirmation(self, confirmation_id: int, decision: str) -> bool:
         with self._conn() as connection:
@@ -301,3 +469,229 @@ class Storage:
                 (decision, utc_now(), confirmation_id),
             )
             return cursor.rowcount == 1
+
+    def expire_confirmation(self, confirmation_id: int) -> bool:
+        with self._conn() as connection:
+            cursor = connection.execute(
+                "UPDATE confirmations SET status = 'EXPIRED', decided_at = ?"
+                " WHERE id = ? AND status = 'PENDING'",
+                (utc_now(), confirmation_id),
+            )
+            return cursor.rowcount == 1
+
+    def expire_confirmations_before(self, cutoff_iso: str) -> list[int]:
+        """Expire every PENDING confirmation created before ``cutoff_iso`` (UTC ISO)."""
+        with self._conn() as connection:
+            rows = connection.execute(
+                "SELECT id FROM confirmations WHERE status = 'PENDING' AND created_at < ?",
+                (cutoff_iso,),
+            ).fetchall()
+            ids = [int(row["id"]) for row in rows]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                connection.execute(
+                    f"UPDATE confirmations SET status = 'EXPIRED', decided_at = ?"
+                    f" WHERE id IN ({placeholders})",
+                    [utc_now(), *ids],
+                )
+        return ids
+
+    def find_confirmation(self, kind: str, payload: str) -> dict[str, Any] | None:
+        row = self._conn().execute(
+            "SELECT * FROM confirmations WHERE kind = ? AND payload = ? ORDER BY id DESC LIMIT 1",
+            (kind, payload),
+        ).fetchone()
+        return dict(row) if row else None
+
+    # --- generic updates -------------------------------------------------
+
+    def _update_row(
+        self,
+        table: str,
+        row_id: int,
+        fields: dict[str, Any],
+        allowed: set[str],
+    ) -> bool:
+        clean = [(key, value) for key, value in fields.items() if key in allowed]
+        if not clean:
+            return False
+        assignments = ", ".join(f"{key} = ?" for key, _ in clean)
+        params = [value for _, value in clean] + [row_id]
+        with self._conn() as connection:
+            cursor = connection.execute(
+                f"UPDATE {table} SET {assignments} WHERE id = ?",
+                params,
+            )
+            return cursor.rowcount == 1
+
+    # --- workflows -------------------------------------------------------
+
+    def save_workflow(self, name: str, steps_json: str) -> int:
+        with self._conn() as connection:
+            existing = connection.execute(
+                "SELECT id, steps FROM workflows WHERE name = ?", (name,)
+            ).fetchone()
+            if existing is not None:
+                if existing["steps"] != steps_json:
+                    connection.execute(
+                        "UPDATE workflows SET steps = ? WHERE id = ?",
+                        (steps_json, existing["id"]),
+                    )
+                return int(existing["id"])
+            cursor = connection.execute(
+                "INSERT INTO workflows (created_at, name, steps) VALUES (?, ?, ?)",
+                (utc_now(), name, steps_json),
+            )
+            return int(cursor.lastrowid)
+
+    def get_workflow(self, name: str) -> dict[str, Any] | None:
+        row = self._conn().execute("SELECT * FROM workflows WHERE name = ?", (name,)).fetchone()
+        return dict(row) if row else None
+
+    def list_workflows(self) -> list[dict[str, Any]]:
+        rows = self._conn().execute("SELECT * FROM workflows ORDER BY id").fetchall()
+        return [dict(row) for row in rows]
+
+    def create_run(
+        self,
+        workflow_id: int,
+        workflow_name: str,
+        *,
+        context: str = "",
+        idempotency_key: str | None = None,
+    ) -> int:
+        now = utc_now()
+        with self._conn() as connection:
+            cursor = connection.execute(
+                "INSERT INTO workflow_runs"
+                " (created_at, updated_at, workflow_id, workflow_name, context, idempotency_key)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (now, now, workflow_id, workflow_name, context, idempotency_key),
+            )
+            return int(cursor.lastrowid)
+
+    def get_run(self, run_id: int) -> dict[str, Any] | None:
+        row = self._conn().execute("SELECT * FROM workflow_runs WHERE id = ?", (run_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_runs(self, limit: int = 20, status: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM workflow_runs"
+        params: list[Any] = []
+        if status:
+            query += " WHERE status = ?"
+            params.append(status)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        return [dict(row) for row in self._conn().execute(query, params).fetchall()]
+
+    def active_run_with_key(self, idempotency_key: str) -> dict[str, Any] | None:
+        row = self._conn().execute(
+            "SELECT * FROM workflow_runs WHERE idempotency_key = ?"
+            " AND status NOT IN ('SUCCESS','FAILED','CANCELLED') ORDER BY id DESC LIMIT 1",
+            (idempotency_key,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def update_run(self, run_id: int, **fields: Any) -> bool:
+        allowed = {"status", "current_step", "result", "error", "context"}
+        if not any(key in allowed for key in fields):
+            return False
+        payload = dict(fields)
+        payload["updated_at"] = utc_now()
+        return self._update_row("workflow_runs", run_id, payload, allowed | {"updated_at"})
+
+    def count_steps(self, run_id: int) -> int:
+        row = self._conn().execute(
+            "SELECT COUNT(*) AS n FROM workflow_steps WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        return int(row["n"])
+
+    def create_step(
+        self, run_id: int, position: int, name: str, kind: str = "agent"
+    ) -> int:
+        with self._conn() as connection:
+            cursor = connection.execute(
+                "INSERT INTO workflow_steps (created_at, run_id, position, name, kind)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (utc_now(), run_id, position, name, kind),
+            )
+            return int(cursor.lastrowid)
+
+    def get_step(self, run_id: int, position: int) -> dict[str, Any] | None:
+        row = self._conn().execute(
+            "SELECT * FROM workflow_steps WHERE run_id = ? AND position = ?",
+            (run_id, position),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def step_by_task(self, task_id: int) -> dict[str, Any] | None:
+        row = self._conn().execute(
+            "SELECT * FROM workflow_steps WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_steps(self, run_id: int) -> list[dict[str, Any]]:
+        rows = self._conn().execute(
+            "SELECT * FROM workflow_steps WHERE run_id = ? ORDER BY position", (run_id,)
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_step(self, step_id: int, **fields: Any) -> bool:
+        allowed = {"status", "task_id", "retry_count", "result", "last_error"}
+        return self._update_row("workflow_steps", step_id, fields, allowed)
+
+    # --- scheduled jobs --------------------------------------------------
+
+    def save_scheduled_job(
+        self,
+        name: str,
+        workflow_name: str,
+        cron_json: str,
+        *,
+        enabled: bool = True,
+    ) -> int:
+        with self._conn() as connection:
+            existing = connection.execute(
+                "SELECT id FROM scheduled_jobs WHERE name = ?", (name,)
+            ).fetchone()
+            if existing is not None:
+                connection.execute(
+                    "UPDATE scheduled_jobs SET workflow_name = ?, cron = ?, enabled = ? WHERE id = ?",
+                    (workflow_name, cron_json, int(enabled), existing["id"]),
+                )
+                return int(existing["id"])
+            cursor = connection.execute(
+                "INSERT INTO scheduled_jobs (created_at, name, workflow_name, cron, enabled)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (utc_now(), name, workflow_name, cron_json, int(enabled)),
+            )
+            return int(cursor.lastrowid)
+
+    def get_scheduled_job(self, name: str) -> dict[str, Any] | None:
+        row = self._conn().execute(
+            "SELECT * FROM scheduled_jobs WHERE name = ?", (name,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_scheduled_jobs(self) -> list[dict[str, Any]]:
+        rows = self._conn().execute("SELECT * FROM scheduled_jobs ORDER BY id").fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_job_enqueued(self, name: str, enqueued_at: str) -> bool:
+        with self._conn() as connection:
+            cursor = connection.execute(
+                "UPDATE scheduled_jobs SET last_enqueued_at = ? WHERE name = ?",
+                (enqueued_at, name),
+            )
+            return cursor.rowcount == 1
+
+    # --- supervision -----------------------------------------------------
+
+    def stale_tasks(self, cutoff_iso: str, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self._conn().execute(
+            "SELECT * FROM tasks WHERE status = 'RUNNING' AND started_at IS NOT NULL"
+            " AND started_at < ? ORDER BY id LIMIT ?",
+            (cutoff_iso, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]

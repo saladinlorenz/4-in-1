@@ -45,6 +45,14 @@ class Settings(BaseSettings):
     agent_max_steps: int = 12
     agent_max_output_chars: int = 4000
 
+    workflow_retry_limit: int = 1
+    workflow_retry_backoff_base: float = 1.5
+
+    scheduler_enabled: bool = True
+    scheduler_timezone: str = "UTC"
+    confirmation_ttl_hours: float = 24.0
+    stuck_task_hours: float = 2.0
+
     telegram_bot_token: str = ""
     telegram_admin_chat_id: int = 0
     telegram_allowed_user_ids: list[int] = Field(default_factory=list)

@@ -206,3 +206,131 @@ def test_chunk_text_limits():
     assert chunk_text("abc") == ["abc"]
     chunks = chunk_text("x" * 9000, limit=4000)
     assert [len(chunk) for chunk in chunks] == [4000, 4000, 1000]
+
+
+def test_resume_requeues_interrupted_and_pending_tasks(settings, storage, notifier):
+    from memory import TaskStatus
+
+    interrupted = storage.create_task("interrupted")
+    storage.mark_running(interrupted)
+    pending = storage.create_task("pending")
+    done = storage.create_task("done")
+    storage.mark_running(done)
+    storage.finish_task(done, TaskStatus.SUCCESS, result="ok")
+
+    router = FakeRouter(
+        responses=[final_answer_payload("reprise un"), final_answer_payload("reprise deux")]
+    )
+    runner = make_runner(settings, storage, notifier, router)
+    stats = runner.resume()
+    assert runner.wait_idle(timeout=30)
+
+    assert stats == {"requeued_running": 1, "cancelled_running": 0, "resumed_pending": 2}
+    assert storage.get_task(interrupted)["status"] == "SUCCESS"
+    assert storage.get_task(pending)["status"] == "SUCCESS"
+    assert storage.get_task(done)["status"] == "SUCCESS"
+    assert storage.get_task(done)["result"] == "ok"
+    assert len(notifier.items) == 2
+    runner.shutdown()
+
+
+def test_resume_is_idempotent(settings, storage, notifier):
+    task_id = storage.create_task("only once")
+    router = FakeRouter(responses=[final_answer_payload("unique")])
+    runner = make_runner(settings, storage, notifier, router)
+
+    runner.resume()
+    runner.resume()
+    assert runner.wait_idle(timeout=30)
+
+    assert storage.get_task(task_id)["status"] == "SUCCESS"
+    assert storage.get_task(task_id)["result"] == "unique"
+    completions = [text for text in notifier.items if "completed" in text]
+    assert len(completions) == 1
+    runner.shutdown()
+
+
+def test_resume_keeps_cancel_requested_task_cancelled(settings, storage, notifier):
+    task_id = storage.create_task("was cancelled while running")
+    storage.mark_running(task_id)
+    storage.cancel_task(task_id)
+
+    router = FakeRouter(responses=[])
+    runner = make_runner(settings, storage, notifier, router)
+    stats = runner.resume()
+    assert runner.wait_idle(timeout=30)
+
+    assert stats == {"requeued_running": 0, "cancelled_running": 1, "resumed_pending": 0}
+    assert storage.get_task(task_id)["status"] == "CANCELLED"
+    assert notifier.items == []
+    runner.shutdown()
+
+
+def test_request_and_approve_confirmation_resumes_task(settings, storage, notifier):
+    task_id = storage.create_task("publish draft 1")
+    storage.mark_running(task_id)
+
+    router = FakeRouter(responses=[final_answer_payload("published")])
+    runner = make_runner(settings, storage, notifier, router)
+
+    confirm_id = runner.request_confirmation(task_id, "publish_draft", "draft#1")
+    assert confirm_id is not None
+    assert storage.get_task(task_id)["status"] == "WAITING_CONFIRMATION"
+    assert any(f"Confirmation #{confirm_id} required" in text for text in notifier.items)
+
+    ok, reason = runner.resolve_confirmation(confirm_id, "APPROVED")
+    assert (ok, reason) == (True, "approved")
+    assert runner.wait_idle(timeout=30)
+
+    assert storage.get_confirmation(confirm_id)["status"] == "APPROVED"
+    task = storage.get_task(task_id)
+    assert task["status"] == "SUCCESS"
+    assert task["result"] == "published"
+    assert any(f"resuming task #{task_id}" in text for text in notifier.items)
+
+    ok, reason = runner.resolve_confirmation(confirm_id, "REJECTED")
+    assert ok is False
+    assert reason == "already_approved"
+    runner.shutdown()
+
+
+def test_reject_confirmation_cancels_task(settings, storage, notifier):
+    task_id = storage.create_task("publish draft 2")
+    storage.mark_running(task_id)
+
+    runner = make_runner(settings, storage, notifier, FakeRouter(responses=[]))
+    confirm_id = runner.request_confirmation(task_id, "publish_draft", "draft#2")
+    assert confirm_id is not None
+
+    ok, reason = runner.resolve_confirmation(confirm_id, "REJECTED")
+    assert (ok, reason) == (True, "rejected")
+
+    task = storage.get_task(task_id)
+    assert task["status"] == "CANCELLED"
+    assert task["error"] == "confirmation rejected"
+    assert storage.get_confirmation(confirm_id)["status"] == "REJECTED"
+    runner.shutdown()
+
+
+def test_confirmation_errors_and_expiration(settings, storage, notifier):
+    runner = make_runner(settings, storage, notifier, FakeRouter(responses=[]))
+
+    assert runner.resolve_confirmation(999, "APPROVED") == (False, "unknown_confirmation")
+    assert runner.resolve_confirmation(999, "MAYBE") == (False, "unknown_confirmation")
+    assert runner.expire_confirmation(999) == (False, "unknown_confirmation")
+
+    pending_id = storage.create_task("still pending")
+    assert runner.request_confirmation(pending_id, "publish", "payload") is None
+
+    task_id = storage.create_task("running task")
+    storage.mark_running(task_id)
+    confirm_id = runner.request_confirmation(task_id, "publish", "payload")
+    assert confirm_id is not None
+
+    assert runner.expire_confirmation(confirm_id) == (True, "expired")
+    task = storage.get_task(task_id)
+    assert task["status"] == "CANCELLED"
+    assert task["error"] == "confirmation expired"
+    assert storage.get_confirmation(confirm_id)["status"] == "EXPIRED"
+    assert runner.expire_confirmation(confirm_id) == (False, "already_expired")
+    runner.shutdown()

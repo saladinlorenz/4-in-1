@@ -22,6 +22,9 @@ def test_build_tools_registers_expected_tools(tool_deps):
         "search_memory",
         "send_notification",
         "get_status",
+        "social_create_draft",
+        "social_publish",
+        "social_list_drafts",
     }
 
 

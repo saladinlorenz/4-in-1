@@ -19,6 +19,8 @@ HELP_TEXT = (
     "/ask <message> - run a task (same as sending a plain message)\n"
     "/tasks - list recent tasks\n"
     "/cancel <task_id> - cancel a pending or running task\n"
+    "/approve <confirmation_id> - approve a pending confirmation\n"
+    "/reject <confirmation_id> - reject a pending confirmation\n"
     "/help - this message"
 )
 
@@ -140,10 +142,39 @@ def register_handlers(
         state = "accepted" if ok else "refused"
         await _reply(update, f"Cancel task #{task_id}: {state} ({reason})")
 
+    async def _decide_confirmation(
+        update: Update, context: ContextTypes.DEFAULT_TYPE, decision: str
+    ) -> None:
+        if not authorized(update):
+            return
+        command = "approve" if decision == "APPROVED" else "reject"
+        args = context.args or []
+        if not args:
+            await _reply(update, f"Usage: /{command} <confirmation_id>")
+            return
+        try:
+            confirmation_id = int(args[0])
+        except ValueError:
+            await _reply(update, "confirmation_id must be a number")
+            return
+        ok, reason = await asyncio.to_thread(
+            runner.resolve_confirmation, confirmation_id, decision
+        )
+        state = "accepted" if ok else "refused"
+        await _reply(update, f"Confirmation #{confirmation_id}: {state} ({reason})")
+
+    async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await _decide_confirmation(update, context, "APPROVED")
+
+    async def cmd_reject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await _decide_confirmation(update, context, "REJECTED")
+
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_start))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("ask", cmd_ask))
     app.add_handler(CommandHandler("tasks", cmd_tasks))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
+    app.add_handler(CommandHandler("approve", cmd_approve))
+    app.add_handler(CommandHandler("reject", cmd_reject))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))

@@ -8,10 +8,12 @@ from typing import Any
 
 from agent import AgentRunner
 from config import Settings, load_settings, setup_logging
-from dashboard import HealthServer
+from dashboard import HealthServer, LocalApi
 from freellmapi_adapter import LLMRouter
 from memory import Storage
+from social import SocialService, TelegramAdapter
 from telegram_bot import LogNotifier, TelegramNotifier, build_application, register_handlers
+from workflows import DEFAULT_SCHEDULED_JOBS, DEFAULT_WORKFLOWS, AppScheduler, WorkflowEngine
 
 logger = logging.getLogger("agentos")
 
@@ -45,7 +47,24 @@ async def run(settings: Settings) -> None:
         cooldown_seconds=settings.llm_cooldown_seconds,
     )
     runner = AgentRunner(settings, storage, router, LogNotifier())
-    health = HealthServer(settings.health_host, settings.health_port, build_snapshot(runner, storage, router, settings))
+    engine = WorkflowEngine(
+        storage,
+        runner,
+        retry_limit=settings.workflow_retry_limit,
+        retry_backoff_base=settings.workflow_retry_backoff_base,
+    )
+    for workflow_name, workflow_steps in DEFAULT_WORKFLOWS.items():
+        engine.register(workflow_name, workflow_steps)
+    runner.add_task_listener(engine.on_task_finished)
+    runner.add_confirmation_listener(engine.on_confirmation_resolved)
+    social = SocialService(storage, runner)
+    runner.add_confirmation_listener(social.on_confirmation)
+    health = HealthServer(
+        settings.health_host,
+        settings.health_port,
+        build_snapshot(runner, storage, router, settings),
+        api=LocalApi(runner, storage),
+    )
     application = None
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
@@ -72,6 +91,14 @@ async def run(settings: Settings) -> None:
             loop,
             timeout=settings.telegram_send_timeout,
         )
+        social.add_adapter(
+            TelegramAdapter(
+                application.bot,
+                settings.telegram_admin_chat_id,
+                loop,
+                timeout=settings.telegram_send_timeout,
+            )
+        )
         await application.initialize()
         await application.start()
         await application.updater.start_polling()
@@ -86,11 +113,41 @@ async def run(settings: Settings) -> None:
         settings.health_host,
         health.port,
     )
+    resumed = runner.resume()
+    logger.info(
+        "recovery: requeued=%s cancelled=%s pending=%s",
+        resumed["requeued_running"],
+        resumed["cancelled_running"],
+        resumed["resumed_pending"],
+    )
+    workflow_resume = engine.resume()
+    logger.info(
+        "workflow recovery: waiting=%s advanced=%s restarted=%s finished=%s requeued=%s",
+        workflow_resume["waiting"],
+        workflow_resume["advanced"],
+        workflow_resume["restarted"],
+        workflow_resume["finished"],
+        workflow_resume["requeued"],
+    )
+    scheduler = AppScheduler(
+        storage,
+        engine,
+        runner,
+        timezone_name=settings.scheduler_timezone,
+        confirmation_ttl_hours=settings.confirmation_ttl_hours,
+        stuck_task_hours=settings.stuck_task_hours,
+    )
+    scheduler.register_jobs(DEFAULT_SCHEDULED_JOBS)
+    if settings.scheduler_enabled:
+        scheduler.start()
+    else:
+        logger.info("scheduler disabled (SCHEDULER_ENABLED=false)")
 
     try:
         await stop_event.wait()
     finally:
         logger.info("shutting down")
+        scheduler.stop()
         if application is not None:
             try:
                 await application.updater.stop()

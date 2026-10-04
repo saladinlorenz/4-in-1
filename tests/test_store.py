@@ -125,3 +125,79 @@ def test_ping_and_reopen(storage: Storage, settings):
     assert reopened.ping() is True
     assert reopened.task_counts() == {}
     reopened.close()
+
+
+def test_reset_interrupted_tasks_recovery(storage: Storage):
+    running_id = storage.create_task("interrupted")
+    storage.mark_running(running_id)
+    cancel_id = storage.create_task("to cancel")
+    storage.mark_running(cancel_id)
+    storage.cancel_task(cancel_id)
+    done_id = storage.create_task("done")
+    storage.mark_running(done_id)
+    storage.finish_task(done_id, TaskStatus.SUCCESS, result="ok")
+
+    stats = storage.reset_interrupted_tasks()
+
+    assert stats == {"cancelled": 1, "requeued": 1}
+    assert storage.get_task(running_id)["status"] == "PENDING"
+    assert storage.get_task(running_id)["started_at"] is None
+    assert storage.get_task(cancel_id)["status"] == "CANCELLED"
+    assert storage.get_task(done_id)["status"] == "SUCCESS"
+    assert storage.get_task(done_id)["result"] == "ok"
+    assert [row["id"] for row in storage.list_pending_tasks()] == [running_id]
+    assert storage.mark_running(running_id) is True
+
+
+def test_confirmation_hold_release_and_crud(storage: Storage):
+    task_id = storage.create_task("publish draft 1")
+    storage.mark_running(task_id)
+
+    assert storage.hold_task(task_id) is True
+    assert storage.get_task(task_id)["status"] == "WAITING_CONFIRMATION"
+    assert storage.hold_task(task_id) is False
+
+    confirm_id = storage.create_confirmation("publish_draft", "draft#1", task_id=task_id)
+    confirmation = storage.get_confirmation(confirm_id)
+    assert confirmation["task_id"] == task_id
+    assert confirmation["status"] == "PENDING"
+    assert storage.get_confirmation(999) is None
+    assert storage.list_confirmations(status="PENDING")[0]["id"] == confirm_id
+
+    assert storage.release_task(task_id, TaskStatus.PENDING) is True
+    assert storage.release_task(task_id, TaskStatus.PENDING) is False
+    task = storage.get_task(task_id)
+    assert task["status"] == "PENDING"
+    assert task["started_at"] is None
+
+    assert storage.decide_confirmation(confirm_id, "APPROVED") is True
+    assert storage.decide_confirmation(confirm_id, "REJECTED") is False
+    assert storage.get_confirmation(confirm_id)["status"] == "APPROVED"
+    assert storage.expire_confirmation(confirm_id) is False
+
+
+def test_cancel_waiting_task_expires_confirmation(storage: Storage):
+    task_id = storage.create_task("sensitive action")
+    storage.mark_running(task_id)
+    storage.hold_task(task_id)
+    confirm_id = storage.create_confirmation("publish", "payload", task_id=task_id)
+
+    ok, reason = storage.cancel_task(task_id)
+
+    assert ok is True
+    assert reason == "cancelled_while_waiting"
+    assert storage.get_task(task_id)["status"] == "CANCELLED"
+    assert storage.get_confirmation(confirm_id)["status"] == "EXPIRED"
+    assert storage.release_task(task_id, TaskStatus.PENDING) is False
+
+
+def test_expire_confirmations_before_bulk(storage: Storage):
+    old_id = storage.create_confirmation("publish", "old")
+    new_id = storage.create_confirmation("publish", "new")
+
+    expired = storage.expire_confirmations_before("9999-01-01T00:00:00+00:00")
+    assert sorted(expired) == [old_id, new_id]
+    assert storage.get_confirmation(old_id)["status"] == "EXPIRED"
+    assert storage.get_confirmation(new_id)["status"] == "EXPIRED"
+
+    assert storage.expire_confirmations_before("9999-01-01T00:00:00+00:00") == []
