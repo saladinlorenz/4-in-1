@@ -136,23 +136,23 @@ Point important : **si `TELEGRAM_BOT_TOKEN` est absent, l'application tourne qua
 
 | # | Où | Ce qui se passe | Ce qui est renvoyé / écrit |
 |---|---|---|---|
-| 1 | `bot.py:115 on_text` / `cmd_ask` | contrôle `authorized()` (`permissions.py:21`) ; **liste vide = tout refusé** | `None` ou refus silencieux (log `rejected Telegram update`) |
-| 2 | `bot.py:107` | `runner.submit(prompt, chat_id)` | — |
-| 3 | `core.py:90` | `storage.create_task()` → ligne `PENDING` ; tâche soumise au pool **1 seul worker** | **`task_id` immédiat** |
-| 4 | `bot.py:108` | réponse instantanée dans le chat demandeur | `"Task #<id> queued."` |
-| 5 | `core.py:95` | `mark_running()` : `PENDING → RUNNING` (reset de `cancel_requested`) | `False` → la tâche est abandonnée (déjà annulée) |
-| 6 | `core.py:100` | `_build_agent()` : `ToolDeps` + `filter_tools()` (liste blanche, `permissions.py:5`) + `RoutedModel(temperature=0.3, tool_choice=required)` + `ToolCallingAgent(max_steps=12)` | un agent **jetable**, propre à cette mission |
-| 7 | `core.py:103` | si annulation déjà demandée → `agent.interrupt_switch = True` | — |
-| 8 | `core.py:105` | `agent.run(prompt)` — **la boucle de décision** (voir §6) | réponse finale (`str`), tronquée à `AGENT_MAX_OUTPUT_CHARS` (4000) |
-| 9 | `core.py:110-111` | `add_message("user", prompt)` + `add_message("assistant", text)` | 2 lignes table `messages` |
-| 10 | `core.py:112` | `finish_task(SUCCESS, result=text)` | `True` → notification |
-| 11 | `core.py:113` → `notifier.send()` | **notification différée** vers `TELEGRAM_ADMIN_CHAT_ID` (blocs de 4000) | `"Task #<id> completed\n<text>"` |
-| 12a | exception non annulée (`core.py:124`) | `finish_task(FAILED, error=…)` + `add_incident("agent", …)` | notification `"Task #<id> failed: <detail redigé>"` |
-| 12b | exception + `cancel_requested` (`core.py:120`) | `finish_task(CANCELLED)` | notification `"Task #<id> cancelled."` |
+| 1 | `bot.py:117 on_text` / `bot.py:112 cmd_ask` | contrôle `authorized()` (`permissions.py:24`) ; **liste vide = tout refusé** | `None` ou refus silencieux (log `rejected Telegram update`) |
+| 2 | `bot.py:109` | `runner.submit(prompt, chat_id)` | — |
+| 3 | `core.py:99` | `storage.create_task()` → ligne `PENDING` ; tâche soumise au pool **1 seul worker** | **`task_id` immédiat** |
+| 4 | `bot.py:110` | réponse instantanée dans le chat demandeur | `"Task #<id> queued."` |
+| 5 | `core.py:242` | `mark_running()` : `PENDING → RUNNING` (reset de `cancel_requested`) | `False` → la tâche est abandonnée (déjà annulée) |
+| 6 | `core.py:67` (déf.), `core.py:248` (appel) | `_build_agent()` : `ToolDeps` + `filter_tools()` (liste blanche, `permissions.py:5`) + `RoutedModel(temperature=0.3, tool_choice=required)` + `ToolCallingAgent(max_steps=12)` | un agent **jetable**, propre à cette mission |
+| 7 | `core.py:252-253` | si annulation déjà demandée → `agent.interrupt_switch = True` | — |
+| 8 | `core.py:254` | `agent.run(prompt)` — **la boucle de décision** (voir §6) | réponse finale (`str`), tronquée à `AGENT_MAX_OUTPUT_CHARS` (4000) |
+| 9 | `core.py:259-260` | `add_message("user", prompt)` + `add_message("assistant", text)` | 2 lignes table `messages` |
+| 10 | `core.py:261` | `finish_task(SUCCESS, result=text)` + `_emit_task` (listeners workflow) | `True` → notification |
+| 11 | `core.py:263` → `notifier.send()` | **notification différée** vers `TELEGRAM_ADMIN_CHAT_ID` (blocs de 4000) | `"Task #<id> completed\n<text>"` |
+| 12a | exception non annulée (`core.py:275-278`) | `finish_task(FAILED, error=…)` + `add_incident("agent", …)` | notification `"Task #<id> failed: <detail redigé>"` |
+| 12b | exception + `cancel_requested` (`core.py:269-272`) | `finish_task(CANCELLED)` | notification `"Task #<id> cancelled."` |
 
 À retenir :
-- **Deux destinations différentes** : la réponse *immédiate* (`queued`) va au **chat qui a demandé** ; le *résultat final* part dans **`TELEGRAM_ADMIN_CHAT_ID`**. Si cet ID vaut 0, `TelegramNotifier.send()` lève `RuntimeError` et le résultat n'arrive que dans les logs (`notifier.py:31-32`, `core.py:177-181`).
-- `finish_task` n'accepte que les états `RUNNING`/`PENDING` (`sqlite_store.py:183`) — impossible d'écraser un état terminal.
+- **Deux destinations différentes** : la réponse *immédiate* (`queued`) va au **chat qui a demandé** ; le *résultat final* part dans **`TELEGRAM_ADMIN_CHAT_ID`**. Si cet ID vaut 0, `TelegramNotifier.send()` lève `RuntimeError` et le résultat n'arrive que dans les logs (`notifier.py:30-32`, `core.py:330-334`).
+- `finish_task` n'accepte que les états `RUNNING`/`PENDING` (`sqlite_store.py:257`) — impossible d'écraser un état terminal.
 
 ### Annulation (`/cancel <id>`)
 
@@ -205,7 +205,7 @@ LLMRouter.chat(payload)                                   freellmapi_adapter/rou
    │ ③ _ordered() : endpoints en cooldown APRÈS les endpoints prêts
    ▼
 pour chaque endpoint :
-   call_endpoint()  POST {base_url}/chat/completions     provider.py:34
+   call_endpoint()  POST {base_url}/chat/completions     provider.py:24
      ├─ 200 + JSON avec "choices"  → RETURN raw dict      ✔ fin de la chaîne
      ├─ 400 avec tool_choice       → retire tool_choice, réessaie une fois
      ├─ erreur réessayable         → sleep(backoff 1.5^n + jitter, cap 8 s), jusqu'à attempts=2
@@ -268,7 +268,7 @@ Le bac à sable (`resolve_in_sandbox`, `files.py:10`) refuse les chemins absolus
 | Commande | Source de la donnée | Réponse |
 |---|---|---|
 | `/start`, `/help` | constante `HELP_TEXT` | liste des commandes |
-| `/status` | `runner.status()` → `format_status()` (`bot.py:26`) | `app/version`, `uptime`, `current task`, compteurs `tasks`, `telegram`, et **une ligne par endpoint LLM** avec `state` + `last_error` |
+| `/status` | `runner.status()` → `format_status()` (`bot.py:28`) | `app/version`, `uptime`, `current task`, compteurs `tasks`, `telegram`, et **une ligne par endpoint LLM** avec `state` + `last_error` |
 | `/ask …`, texte libre | `runner.submit()` | `Task #<id> queued.` puis **plus rien** (le résultat arrive par notification) |
 | `/tasks` | `storage.list_tasks(10)` | 10 lignes `#id [STATUS] date prompt(60)` |
 | `/cancel <id>` | `runner.cancel()` | `Cancel task #<id>: accepted/refused (reason)` |
@@ -294,7 +294,7 @@ Le bac à sable (`resolve_in_sandbox`, `files.py:10`) refuse les chemins absolus
 {"status": "ok", "version": "0.1.0", "uptime_seconds": 12.4}
 ```
 
-`GET /api/status` → instantané complet (`main.py:19-34`) :
+`GET /api/status` → instantané complet (`main.py:21-36`) :
 
 ```json
 {
@@ -332,7 +332,7 @@ Erreurs : `400` identifiant/limit invalide, `404` route inconnue, `405` mauvaise
 
 ## 9. Persistance : qui écrit, qui lit
 
-Fichier `storage/agentos.sqlite3` — **créé et protégé uniquement par `Storage`**, WAL actif, connexions **par thread** (`sqlite_store.py:95-106`).
+Fichier `storage/agentos.sqlite3` — **créé et protégé uniquement par `Storage`**, WAL actif, connexions **par thread** (`sqlite_store.py:143-153`).
 
 | Table | Écrit par | Lu par | État |
 |---|---|---|---|
