@@ -8,6 +8,10 @@ class SocialAdapter(Protocol):
 
     Implementations must perform a real API call and raise on failure.
     A publication is never simulated: no adapter, no publication.
+
+    Optional capabilities used by the dashboard (absent = not supported):
+    - ``configured() -> (bool, str)``: local configuration status, no network;
+    - ``test() -> str``: real connection test (login/ping), never publishes.
     """
 
     platform: str

@@ -8,6 +8,8 @@ from collections.abc import Callable
 from freellmapi_adapter.fallback import backoff_delay
 from memory import Storage, TaskStatus
 
+from .validation import parse_workflow
+
 logger = logging.getLogger(__name__)
 
 ACTIVE_RUN_STATUSES = ("PENDING", "RUNNING", "WAITING_CONFIRMATION")
@@ -53,15 +55,65 @@ class WorkflowEngine:
     # --- definitions -----------------------------------------------------
 
     def register(self, name: str, steps: list[dict]) -> int:
-        normalized = [
-            {
-                "name": str(step.get("name") or f"step{index}"),
-                "kind": str(step.get("kind") or "agent"),
-                "prompt": str(step.get("prompt") or ""),
-            }
-            for index, step in enumerate(steps)
-        ]
-        return self.storage.save_workflow(name, json.dumps(normalized, ensure_ascii=False))
+        """Store a workflow definition; strict closed-schema validation.
+
+        Raises ``ValueError`` on any unknown key, bad kind, empty prompt or
+        out-of-range step count (both API and agent-tool paths go through it).
+        """
+        clean_name, normalized = parse_workflow({"name": name, "steps": steps})
+        return self.storage.save_workflow(clean_name, json.dumps(normalized, ensure_ascii=False))
+
+    # --- cancel ----------------------------------------------------------
+
+    def cancel(self, run_id: int) -> tuple[bool, str]:
+        """Cancel an active run from the dashboard (same paths as Telegram).
+
+        - ``WAITING_CONFIRMATION``: reject the pending confirmation (single
+          gate: ``runner.resolve_confirmation`` fires the listeners);
+        - ``RUNNING``: cancel the current step task, then force the run
+          terminal if the listener has not caught up;
+        - ``PENDING``: mark the run cancelled directly.
+        """
+        with self._lock:
+            run = self.storage.get_run(run_id)
+            if run is None:
+                return False, "unknown run"
+            status = str(run["status"])
+            if status in TERMINAL_RUN_STATUSES:
+                return False, f"run already {status}"
+            if status == TaskStatus.WAITING_CONFIRMATION.value:
+                confirmation = self.storage.find_confirmation(
+                    "workflow_run", _workflow_payload(run_id, run["current_step"])
+                )
+                if confirmation is not None and confirmation["status"] == "PENDING":
+                    ok, reason = self.runner.resolve_confirmation(
+                        int(confirmation["id"]), "REJECTED"
+                    )
+                    if not ok:
+                        return False, str(reason)
+                    fresh = self.storage.get_run(run_id)
+                    if fresh is not None and fresh["status"] not in TERMINAL_RUN_STATUSES:
+                        self._finish(run_id, TaskStatus.CANCELLED, error="confirmation rejected")
+                    return True, "cancelled"
+                self._finish(run_id, TaskStatus.CANCELLED, error="cancelled by operator")
+                return True, "cancelled"
+            if status == TaskStatus.RUNNING.value:
+                step = self.storage.get_step(run_id, int(run["current_step"]))
+                if step is not None and step.get("task_id") and step["status"] == "RUNNING":
+                    ok, reason = self.runner.cancel(int(step["task_id"]))
+                    fresh = self.storage.get_run(run_id)
+                    if (
+                        fresh is not None
+                        and fresh["status"] not in TERMINAL_RUN_STATUSES
+                        and int(fresh["current_step"]) == int(run["current_step"])
+                    ):
+                        self.storage.update_step(step["id"], status="CANCELLED")
+                        self._finish(run_id, TaskStatus.CANCELLED, error="step cancelled")
+                    if not ok and reason:
+                        return True, str(reason)
+                    return True, "cancelled"
+            self._finish(run_id, TaskStatus.CANCELLED, error="cancelled by operator")
+            return True, "cancelled"
 
     # --- enqueue ---------------------------------------------------------
 

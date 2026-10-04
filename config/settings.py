@@ -15,6 +15,13 @@ class LLMEndpoint(BaseModel):
     api_key: str = ""
     model: str = "auto"
     timeout: float = 60.0
+    name: str = ""
+    enabled: bool = True
+    priority: int = 100
+    attempts: int = 0  # 0 = router default
+    cooldown_seconds: float = 0.0  # 0 = router default
+    max_tokens: int | None = None
+    temperature: float | None = None
 
     @property
     def label(self) -> str:
@@ -22,6 +29,10 @@ class LLMEndpoint(BaseModel):
 
         host = urlparse(self.base_url).netloc or self.base_url
         return f"{host}/{self.model}"
+
+    @property
+    def display_name(self) -> str:
+        return self.name or self.label
 
 
 class Settings(BaseSettings):

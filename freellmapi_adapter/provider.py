@@ -36,6 +36,10 @@ def call_endpoint(
     if endpoint.api_key:
         headers["Authorization"] = f"Bearer {endpoint.api_key}"
     body: dict[str, Any] = {**payload, "model": endpoint.model}
+    if endpoint.max_tokens:
+        body.setdefault("max_tokens", endpoint.max_tokens)
+    if endpoint.temperature is not None:
+        body.setdefault("temperature", endpoint.temperature)
     label = endpoint.label
 
     attempt = 0

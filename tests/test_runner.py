@@ -334,3 +334,51 @@ def test_confirmation_errors_and_expiration(settings, storage, notifier):
     assert storage.get_confirmation(confirm_id)["status"] == "EXPIRED"
     assert runner.expire_confirmation(confirm_id) == (False, "already_expired")
     runner.shutdown()
+
+
+def test_generate_text_uses_router(settings, storage, notifier):
+    router = FakeRouter(
+        responses=[
+            {"choices": [{"message": {"content": "pong"}}]},
+            {"choices": []},
+        ]
+    )
+    runner = make_runner(settings, storage, notifier, router)
+
+    assert runner._generate_text("ping") == "pong"
+    assert router.payloads[0]["messages"][0]["content"] == "ping"
+    assert router.payloads[0]["temperature"] == 0.3
+
+    try:
+        runner._generate_text("again")
+        raise AssertionError("empty choices must raise")
+    except RuntimeError as exc:
+        assert "no choices" in str(exc)
+    runner.shutdown()
+
+
+def test_workflow_helpers(settings, storage, notifier):
+    from workflows import WorkflowEngine
+
+    runner = make_runner(settings, storage, notifier, FakeRouter(responses=[]))
+    assert runner._workflow_runs("", 5) == []
+    try:
+        runner._workflow_create("wf", [])
+        raise AssertionError("missing engine must raise")
+    except RuntimeError as exc:
+        assert "not attached" in str(exc)
+
+    engine = WorkflowEngine(storage, runner, schedule=lambda delay, callback: None)
+    runner.workflow_engine = engine
+    workflow_id = runner._workflow_create(
+        "wf", [{"name": "step1", "kind": "agent", "prompt": "do it"}]
+    )
+    assert workflow_id >= 1
+    assert storage.get_workflow("wf") is not None
+
+    workflow = storage.get_workflow("wf")
+    storage.create_run(workflow["id"], "wf")
+    storage.create_run(workflow["id"], "other")
+    rows = runner._workflow_runs("wf", 5)
+    assert [row["workflow_name"] for row in rows] == ["wf"]
+    runner.shutdown()

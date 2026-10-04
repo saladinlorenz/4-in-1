@@ -56,6 +56,69 @@ class AppScheduler:
             persisted += 1
         return persisted
 
+    # --- dynamic schedule management (dashboard) -------------------------
+
+    def schedule_set(
+        self,
+        name: str,
+        workflow_name: str,
+        hour: int,
+        minute: int,
+        *,
+        enabled: bool = True,
+    ) -> int:
+        """Create or update a cron job, syncing the live scheduler if started."""
+        if self.storage.get_workflow(workflow_name) is None:
+            raise ValueError(f"unknown workflow '{workflow_name}'")
+        cron = {"hour": int(hour), "minute": int(minute)}
+        job_id = self.storage.save_scheduled_job(
+            name, workflow_name, json.dumps(cron), enabled=enabled
+        )
+        self._sync_job(name, cron, enabled)
+        logger.info(
+            "scheduled job %s -> %s at %02d:%02d (enabled=%s)",
+            name,
+            workflow_name,
+            int(hour),
+            int(minute),
+            enabled,
+        )
+        return job_id
+
+    def schedule_delete(self, name: str) -> bool:
+        """Remove a cron job from SQLite and from the live scheduler."""
+        removed = self.storage.delete_scheduled_job(name)
+        if removed:
+            self._remove_job(name)
+            logger.info("scheduled job %s deleted", name)
+        return removed
+
+    def _sync_job(self, name: str, cron: dict, enabled: bool) -> None:
+        scheduler = self._scheduler
+        if scheduler is None:
+            return
+        if not enabled:
+            self._remove_job(name)
+            return
+        from apscheduler.triggers.cron import CronTrigger
+
+        scheduler.add_job(
+            self.run_job,
+            CronTrigger(hour=cron.get("hour"), minute=cron.get("minute"), timezone=self._tz()),
+            args=[name],
+            id=name,
+            replace_existing=True,
+        )
+
+    def _remove_job(self, name: str) -> None:
+        scheduler = self._scheduler
+        if scheduler is None:
+            return
+        try:
+            scheduler.remove_job(name)
+        except Exception:
+            logger.debug("scheduled job %s was not registered", name)
+
     def start(self) -> int:
         from apscheduler.schedulers.background import BackgroundScheduler
         from apscheduler.triggers.cron import CronTrigger

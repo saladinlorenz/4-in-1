@@ -22,3 +22,7 @@ class ToolDeps:
     files_max_entries: int = 200
     web_fetch_max_chars: int = 20_000
     request_confirmation: Callable[[str, str], int | None] | None = None
+    generate_fn: Callable[[str], str] | None = None
+    workflow_create_fn: Callable[[str, list[dict]], int] | None = None
+    workflow_run_fn: Callable[[str, str | None], int | None] | None = None
+    workflow_runs_fn: Callable[[str, int], list[dict]] | None = None

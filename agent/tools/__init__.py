@@ -3,12 +3,14 @@ from __future__ import annotations
 from .base import ToolDeps
 from .files import make_tools as make_file_tools
 from .memory import make_tools as make_memory_tools
+from .model import make_tools as make_model_tools
 from .social import make_tools as make_social_tools
 from .status import make_notify_tool, make_status_tool
 from .web_fetch import default_fetch
 from .web_fetch import make_tool as make_fetch_tool
 from .web_search import default_search
 from .web_search import make_tool as make_search_tool
+from .workflows import make_tools as make_workflow_tools
 
 
 def build_tools(deps: ToolDeps) -> list[object]:
@@ -20,6 +22,8 @@ def build_tools(deps: ToolDeps) -> list[object]:
     tools.append(make_notify_tool(deps))
     tools.append(make_status_tool(deps))
     tools.extend(make_social_tools(deps))
+    tools.extend(make_model_tools(deps))
+    tools.extend(make_workflow_tools(deps))
     return tools
 
 

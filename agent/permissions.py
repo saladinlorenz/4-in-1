@@ -16,6 +16,10 @@ ALLOWED_TOOL_NAMES = frozenset(
         "social_create_draft",
         "social_publish",
         "social_list_drafts",
+        "model_generate",
+        "workflow_create",
+        "workflow_run",
+        "workflow_status",
         "final_answer",
     }
 )

@@ -8,10 +8,18 @@ from typing import Any
 
 from agent import AgentRunner
 from config import Settings, load_settings, setup_logging
+from config.secrets import SecretStore
 from dashboard import HealthServer, LocalApi
 from freellmapi_adapter import LLMRouter
 from memory import Storage
-from social import SocialService, TelegramAdapter
+from services import (
+    AdminAuth,
+    AgentConfigService,
+    IntegrationTester,
+    LLMConfigService,
+    SettingsService,
+)
+from social import BlueskyAdapter, DevtoAdapter, SocialService, TelegramAdapter
 from telegram_bot import LogNotifier, TelegramNotifier, build_application, register_handlers
 from workflows import DEFAULT_SCHEDULED_JOBS, DEFAULT_WORKFLOWS, AppScheduler, WorkflowEngine
 
@@ -46,7 +54,12 @@ async def run(settings: Settings) -> None:
         backoff_base=settings.llm_backoff_base,
         cooldown_seconds=settings.llm_cooldown_seconds,
     )
-    runner = AgentRunner(settings, storage, router, LogNotifier())
+    secret_store = SecretStore(settings.storage_dir / ".env.runtime")
+    settings_service = SettingsService(storage, actor="dashboard")
+    agent_config = AgentConfigService(settings_service, settings)
+    runner = AgentRunner(
+        settings, storage, router, LogNotifier(), agent_config=agent_config
+    )
     engine = WorkflowEngine(
         storage,
         runner,
@@ -55,15 +68,46 @@ async def run(settings: Settings) -> None:
     )
     for workflow_name, workflow_steps in DEFAULT_WORKFLOWS.items():
         engine.register(workflow_name, workflow_steps)
+    runner.workflow_engine = engine
     runner.add_task_listener(engine.on_task_finished)
     runner.add_confirmation_listener(engine.on_confirmation_resolved)
     social = SocialService(storage, runner)
+    social.add_adapter(DevtoAdapter(secret_store))
+    social.add_adapter(BlueskyAdapter(secret_store))
     runner.add_confirmation_listener(social.on_confirmation)
+    llm_config = LLMConfigService(settings_service, secret_store, router)
+    seeded = llm_config.seed(settings.llm_endpoints)
+    llm_config.reload()
+    if seeded:
+        logger.info("LLM endpoints moved from .env to SQLite: %d", seeded)
+    scheduler = AppScheduler(
+        storage,
+        engine,
+        runner,
+        timezone_name=settings.scheduler_timezone,
+        confirmation_ttl_hours=settings.confirmation_ttl_hours,
+        stuck_task_hours=settings.stuck_task_hours,
+    )
+    admin_auth = AdminAuth(storage, secret_store)
+    integrations = IntegrationTester(secret_store, settings)
     health = HealthServer(
         settings.health_host,
         settings.health_port,
         build_snapshot(runner, storage, router, settings),
-        api=LocalApi(runner, storage),
+        api=LocalApi(
+            runner,
+            storage,
+            settings_service=settings_service,
+            secret_store=secret_store,
+            llm_config=llm_config,
+            agent_config=agent_config,
+            workflow_engine=engine,
+            scheduler=scheduler,
+            social=social,
+            auth=admin_auth,
+            integrations=integrations,
+        ),
+        auth=admin_auth,
     )
     application = None
     loop = asyncio.get_running_loop()
@@ -128,14 +172,6 @@ async def run(settings: Settings) -> None:
         workflow_resume["restarted"],
         workflow_resume["finished"],
         workflow_resume["requeued"],
-    )
-    scheduler = AppScheduler(
-        storage,
-        engine,
-        runner,
-        timezone_name=settings.scheduler_timezone,
-        confirmation_ttl_hours=settings.confirmation_ttl_hours,
-        stuck_task_hours=settings.stuck_task_hours,
     )
     scheduler.register_jobs(DEFAULT_SCHEDULED_JOBS)
     if settings.scheduler_enabled:

@@ -46,6 +46,32 @@ class SocialService:
         if platform:
             self.adapters[platform] = adapter
 
+    # --- connection status / tests (never publish) -----------------------
+
+    def describe(self) -> list[dict]:
+        """Adapter inventory for the dashboard: configuration only, no network."""
+        rows: list[dict] = []
+        for platform, adapter in sorted(self.adapters.items()):
+            configured = getattr(adapter, "configured", None)
+            try:
+                ok, detail = configured() if callable(configured) else (True, "configured")
+            except Exception as exc:  # configuration check must never explode
+                ok, detail = False, redact(str(exc))[:200]
+            rows.append(
+                {"platform": platform, "configured": bool(ok), "status": str(detail)}
+            )
+        return rows
+
+    def test(self, platform: str) -> str:
+        """Run the platform connection test (real login/API ping, no publish)."""
+        adapter = self.adapters.get(platform)
+        if adapter is None:
+            raise ValueError(f"no adapter configured for {platform}")
+        tester = getattr(adapter, "test", None)
+        if not callable(tester):
+            raise ValueError(f"platform {platform} has no connection test")
+        return str(tester())
+
     # --- confirmation listener (the only publication path) ---------------
 
     def on_confirmation(self, confirmation_id: int, decision: str) -> None:

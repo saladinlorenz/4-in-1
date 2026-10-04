@@ -21,6 +21,21 @@ class TelegramAdapter:
         self._loop = loop
         self._timeout = timeout
 
+    def configured(self) -> tuple[bool, str]:
+        if self._bot is not None and self._chat_id:
+            return True, "bot + chat_id configurés"
+        return False, "bot ou telegram_admin_chat_id absent"
+
+    def test(self) -> str:
+        if self._bot is None:
+            raise RuntimeError("telegram bot is not configured")
+        future = asyncio.run_coroutine_threadsafe(self._bot.get_me(), self._loop)  # type: ignore[attr-defined]
+        me = future.result(timeout=self._timeout)
+        username = getattr(me, "username", None)
+        if not username:
+            raise RuntimeError("telegram get_me returned no username")
+        return f"authenticated as @{username}"
+
     def publish(self, content: str) -> str:
         if not self._chat_id:
             raise RuntimeError("telegram_admin_chat_id is not configured")

@@ -2,7 +2,7 @@
 
 > A lightweight, modular, autonomous personal agent system designed to run continuously on a Debian ARM64 environment under PRoot on Android — without Docker, Node.js, PostgreSQL, Redis, or a mandatory Cloudflare Tunnel.
 
-AgentOS combines an AI agent, persistent tasks, a multi-model layer, Internet tools, a local memory, and (in later phases) a social content management module into a single Python application.
+AgentOS combines an AI agent, persistent tasks, a multi-model layer, Internet tools, a local memory, a social content management module, and a browser-based local dashboard (first-run setup, login, full configuration) into a single Python application.
 
 ***
 
@@ -101,7 +101,9 @@ The agent is the brain of the system. It receives a mission, analyzes the reques
 
 The initial engine uses `smolagents` (installed in editable mode from the bundled checkout) with custom Python tools wrapped in a `RoutedModel` that bridges smolagents to the multi-endpoint LLM router.
 
-The agent does **not** get unlimited access to the system. Tools are controlled and bounded (`AGENT_MAX_STEPS`, `AGENT_MAX_OUTPUT_CHARS`, sandboxed file paths).
+The agent does **not** get unlimited access to the system. Tools are controlled and bounded (`AGENT_MAX_STEPS`, `AGENT_MAX_OUTPUT_CHARS`, sandboxed file paths) and exposed through an immutable allow-list of 17 names (`ALLOWED_TOOL_NAMES`).
+
+Execution is abstracted behind an `AgentBackend` registry (`agent/backends.py`): `smolagents` is the active backend; `SmolClaw` is registered with `availability() == (False, reason)` after a real inspection of the bundled `smolclaw-main` (an MIT Bun/TypeScript Telegram bot with an unlimited shell), so it is never selectable nor executable.
 
 ```text
 User mission
@@ -122,9 +124,10 @@ Key modules:
 | Module | Role |
 |---|---|
 | `agent/core.py` | `AgentRunner`: submit, status, cancel, confirmations, resume, single active task, listeners |
+| `agent/backends.py` | `AgentBackend` registry (`smolagents` active, `SmolClaw` registered unavailable) |
 | `agent/model_router.py` | `RoutedModel(smolagents.Model)` bridging to the endpoint router |
-| `agent/permissions.py` | Allow-lists and action policies |
-| `agent/tools/` | The twelve registered tools (see below) |
+| `agent/permissions.py` | Allow-lists and action policies (`ALLOWED_TOOL_NAMES`, dry-run blocked tools) |
+| `agent/tools/` | The sixteen registered tools (see below) |
 
 ### freellmapi-python adapter
 
@@ -190,8 +193,8 @@ Tools are plain Python functions independent of the framework, registered throug
 | `search_memory` | implemented | Query persistent memory |
 | `send_notification` | implemented | Push a notification to Telegram |
 | `get_status` | implemented | Report agent, task, and endpoint status |
-| `model_generate` | planned (V2) | Direct model call via freellmapi |
-| `workflow_create` / `workflow_run` / `workflow_status` | planned (V2) | Persistent workflow control |
+| `model_generate` | implemented | Direct standalone model completion through the endpoint router |
+| `workflow_create` / `workflow_run` / `workflow_status` | implemented | Persistent workflow control (validated registration, idempotent runs) |
 | `social_create_draft` | implemented | Create or deduplicate a social draft |
 | `social_publish` | implemented | Request publication, approved via Telegram |
 | `social_list_drafts` | implemented | List drafts with status and schedule |
@@ -225,23 +228,25 @@ Status update + notification
 Implemented:
 
 - draft creation with duplicate prevention;
-- editorial scheduling fields (`scheduled_for`);
+- editorial scheduling fields (`scheduled_for`) with a calendar-style view in the dashboard;
 - publication history and statuses (`DRAFT`, `PUBLISHED`, `FAILED`);
 - validation through Telegram (`/approve`, `/reject`);
-- publication through a connected platform adapter;
+- publication through connected platform adapters: **Telegram, DEV.to, Bluesky**;
+- connection tests per adapter (`POST /api/social/test`) — real API calls, errors returned redacted;
+- credentials stored write-only in the local secret store (`DEVTO_API_KEY`, `BLUESKY_HANDLE`, `BLUESKY_APP_PASSWORD`), masked in the interface (`Configured (ends ...xxxx)`);
 - status tracking and redacted failure reporting;
 - no simulated publication: no adapter, no publication.
 
 Planned:
 
 - content templates;
-- DEV.to, Bluesky, LinkedIn and further adapters.
+- LinkedIn and further adapters.
 
 Integration priority:
 
-1. Telegram;
-2. DEV.to;
-3. Bluesky;
+1. Telegram — done;
+2. DEV.to — done;
+3. Bluesky — done;
 4. LinkedIn;
 5. Facebook / Instagram / Threads;
 6. TikTok / YouTube / Pinterest.
@@ -290,6 +295,53 @@ Access is restricted: only user IDs listed in `TELEGRAM_ALLOWED_USER_IDS` can co
 
 ***
 
+## Local dashboard and Admin API
+
+The whole configuration is operable from a browser at `http://127.0.0.1:8080/` (vanilla HTML/JS SPA, no build step, no Node.js).
+
+First run: `POST /api/setup` creates the admin password (PBKDF2-SHA256, 150 000 iterations, stored in the local secret store — never in SQLite, never returned). Every later visit uses `POST /api/login` → `agentos_session` cookie.
+
+Pages:
+
+| Page | What it does |
+|---|---|
+| Dashboard | health, task counts, endpoint states |
+| Tasks / Incidents / Memory | read-only views over the local API |
+| Settings | key/value settings (`SettingsService`, audit-logged) |
+| LLM endpoints | CRUD on the ordered endpoint list + test, reload of the router |
+| Secrets | list (masked), set, delete, rotate — write-only, `ADMIN_PASSWORD_HASH` excluded |
+| Agent | prompt, max steps, temperature, dry-run, tool selection, backend |
+| Workflows | definitions, JSON editor + dry-run, runs, cancel, cron schedule/delete |
+| Social | drafts, calendar, adapters + connection tests |
+| Security | active sessions (revoke), tool allow-list, dry-run blocked tools, audit log |
+| Integrations | secrets + real connection tests (Telegram, DDGS, SMTP, GitHub) |
+
+Security model of the Admin API:
+
+- every `POST` requires a valid session cookie **and** an `X-CSRF-Token` header (fail-closed), except `setup`, `login`, `logout`;
+- `GET /api/security` additionally requires a valid session (reads are otherwise local-only: the server binds to `127.0.0.1`);
+- request bodies are closed schemas (`extra="forbid"`, ≤16 Ko) and unknown fields return `400`;
+- all exceptions are redacted (`redact`) before leaving the process; audit trail in the `audit_log` table (`settings.*`, `secret.*`, `llm.*`, `agent.update`, `workflow.*`, `social.test`, `integration.test`, `auth.*`);
+- secrets are write-only: responses show only `Configured (ends ...xxxx)`.
+
+Endpoints (summary):
+
+```text
+GET  /api/session | /api/settings | /api/llm/endpoints | /api/secrets | /api/audit
+     /api/agent | /api/workflows | /api/social | /api/security | /api/integrations
+     /api/tasks | /api/incidents | /api/memory | /api/drafts | /api/confirmations
+POST /api/setup | /api/login | /api/logout
+     /api/settings(/delete) | /api/llm/endpoints(/update|/delete|/test) | /api/llm/reload
+     /api/secrets/set | /api/secrets/delete | /api/secrets/rotate
+     /api/agent | /api/workflows(/dry_run|/run|/cancel|/schedule|/schedule/delete)
+     /api/social/test | /api/integrations/test | /api/security/sessions/revoke
+     /api/tasks/<id>/cancel | /api/confirmations/<id>/approve|reject
+```
+
+Integration connection tests (`POST /api/integrations/test`) perform genuine read-only handshakes — Telegram `getMe`, GitHub `/user`, SMTP `ehlo`+`login` (no mail sent), one DDGS query — never printing credential values.
+
+***
+
 ## Persistence and memory
 
 SQLite is used by default to avoid PostgreSQL and Redis in the first versions.
@@ -303,7 +355,7 @@ storage/
 └── exports/
 ```
 
-The database currently stores (10 tables):
+The database currently stores (13 tables):
 
 - messages (conversation history);
 - tasks (status, retries, results);
@@ -312,9 +364,12 @@ The database currently stores (10 tables):
 - drafts (social drafts);
 - memory (long-term knowledge);
 - workflows, workflow_runs, workflow_steps (persistent workflow engine);
-- scheduled_jobs (idempotency keys for cron triggers).
+- scheduled_jobs (idempotency keys for cron triggers);
+- settings (dashboard-editable key/value configuration);
+- audit_log (who changed what through the Admin API);
+- admin_sessions (hashed session tokens + expiry).
 
-Secrets are never stored in plain text in SQLite. They are provided through environment variables or a protected local store. The whole `storage/` directory is git-ignored.
+Secrets are never stored in plain text in SQLite. Dashboard secrets live in `storage/.env.runtime` (git-ignored, write-only through the API, masked in responses); the admin password is a PBKDF2 hash. The whole `storage/` directory is git-ignored.
 
 ***
 
@@ -363,6 +418,15 @@ Dangerous actions are blocked by default.
 | Public dashboard exposure | Disabled by default (binds to `127.0.0.1`) |
 
 API keys and tokens must never be printed in logs, Telegram replies, or the local interface — all error paths go through a redaction helper.
+
+Admin API controls:
+
+- first-run password setup, PBKDF2-SHA256 (150 000 iterations), login rate-limiting;
+- session cookies hashed (SHA-256) with expiry, revocable from the Security page;
+- CSRF token required on every state-changing request (fail-closed);
+- the agent tool allow-list (`ALLOWED_TOOL_NAMES`) is immutable through the API — a forged `agent.tools` payload is ignored at `effective()`;
+- tools flagged as dry-run blocked still refuse irreversible actions even when dry-run mode is off;
+- rotating or reading `ADMIN_PASSWORD_HASH` through the API is refused.
 
 Repository hygiene:
 
@@ -421,7 +485,7 @@ cp .env.example .env               # then edit .env
 python scripts/check_env.py
 
 # 5. Run the test suite and the linter
-python -m pytest                   # 107 tests, no network, no API keys
+python -m pytest                   # 170 tests, no network, no API keys
 python -m ruff check . tests scripts
 
 # 6. Start AgentOS
@@ -431,11 +495,12 @@ python main.py
 Once running:
 
 ```text
-Health:   http://127.0.0.1:8080/health
-Status:   http://127.0.0.1:8080/api/status
+Health:    http://127.0.0.1:8080/health
+Status:    http://127.0.0.1:8080/api/status
+Dashboard: http://127.0.0.1:8080/          (first run: create the admin password)
 Local API: http://127.0.0.1:8080/api/tasks|incidents|memory|drafts|confirmations
-Telegram: send /status or /ask <mission> to your bot
-Stop:     Ctrl+C (SIGINT) or SIGTERM for a clean shutdown
+Telegram:  send /status or /ask <mission> to your bot
+Stop:      Ctrl+C (SIGINT) or SIGTERM for a clean shutdown
 ```
 
 ### Main environment variables
@@ -455,6 +520,8 @@ Stop:     Ctrl+C (SIGINT) or SIGTERM for a clean shutdown
 | `CONFIRMATION_TTL_HOURS` | Pending confirmations expire after this TTL (default 24) |
 | `STUCK_TASK_HOURS` | Supervisor reports tasks running longer than this (default 2) |
 | `LOG_LEVEL` | Logging verbosity |
+
+The admin password is **not** an environment variable: it is created at the dashboard's first run and stored as a PBKDF2 hash in `storage/.env.runtime` (git-ignored).
 
 ***
 
@@ -486,6 +553,7 @@ tenacity        retry helpers (V2)
 ```text
 4in1/
 ├── README.md
+├── ARCHITECTURE.md            technical reference (French)
 ├── requirements.in
 ├── requirements.txt
 ├── .env.example
@@ -496,29 +564,37 @@ tenacity        retry helpers (V2)
 │
 ├── config/
 │   ├── settings.py             pydantic settings + .env loading
-│   └── logging.py              logging setup with file + console
+│   ├── secrets.py              SecretStore (write-only, masked)
+│   └── logging.py              logging setup with file + console (redact filter)
 │
 ├── agent/
 │   ├── core.py                 AgentRunner: submit/status/cancel/confirmations
+│   ├── backends.py             AgentBackend registry (smolagents / SmolClaw)
 │   ├── model_router.py         RoutedModel bridge to smolagents
-│   ├── permissions.py          action policies and allow-lists
+│   ├── permissions.py          action policies, ALLOWED_TOOL_NAMES (17 names)
 │   └── tools/                  the registered agent tools
-│       ├── web_search.py
-│       ├── web_fetch.py
-│       ├── files.py
-│       ├── memory.py
-│       ├── status.py
+│       ├── web_search.py  web_fetch.py  files.py  memory.py
+│       ├── model.py            model_generate
+│       ├── workflows.py        workflow_create / workflow_run / workflow_status
 │       ├── social.py           social drafts and publishing flow
-│       └── base.py
+│       └── status.py  base.py
 │
 ├── workflows/
-│   ├── engine.py               SQLite workflow runs/steps + retries
+│   ├── engine.py               SQLite workflow runs/steps + retries + cancel
 │   ├── scheduler.py            APScheduler cron triggers -> enqueue
+│   ├── validation.py           declarative workflow/run/schedule schemas
 │   └── definitions.py          daily news / daily report workflows
 │
 ├── social/
 │   ├── service.py              draft lifecycle, approval-driven publishing
-│   └── adapters/               TelegramAdapter (real API publication)
+│   └── adapters/               telegram, devto, bluesky + http_json helper
+│
+├── services/
+│   ├── auth.py                 AdminAuth: PBKDF2, sessions, rate-limit
+│   ├── settings_service.py     settings table (audit-logged)
+│   ├── llm_config.py           endpoint CRUD + write-only keys + router reload
+│   ├── agent_config.py         prompt/steps/temp/dry-run/tools applied to runner
+│   └── integrations.py         IntegrationTester (telegram/ddgs/smtp/github)
 │
 ├── freellmapi_adapter/
 │   ├── provider.py             single endpoint call + retries
@@ -526,7 +602,7 @@ tenacity        retry helpers (V2)
 │   └── fallback.py             failure classification
 │
 ├── memory/
-│   ├── sqlite_store.py         schema + CRUD (10 tables)
+│   ├── sqlite_store.py         schema + CRUD (13 tables)
 │   └── search.py               memory search helpers
 │
 ├── telegram_bot/
@@ -534,13 +610,14 @@ tenacity        retry helpers (V2)
 │   └── notifier.py             Telegram and log notifiers
 │
 ├── dashboard/
-│   └── app.py                  local HTTP server (health + local API)
+│   ├── app.py                  health server + Admin API (auth, CSRF, routes)
+│   └── static/index.html       dashboard SPA (10 pages, vanilla JS)
 │
 ├── scripts/
 │   ├── check_env.py            environment verification
 │   └── run.sh                  process supervision helper
 │
-├── tests/                      107 unit tests (mocked network)
+├── tests/                      170 unit tests (mocked network)
 │
 ├── storage/                    runtime data (git-ignored)
 │
@@ -574,29 +651,33 @@ tenacity        retry helpers (V2)
 - [x] Cancellation of scheduled work
 - [x] Incidents and diagnostics endpoints
 - [x] Scheduled Telegram reports (daily AI news, daily report)
-- [ ] `model_generate`, `workflow_*` tools
+- [x] `model_generate`, `workflow_*` tools
 
 ### V3 — Social management
 
 - [x] Social drafts
 - [x] Telegram validation flow (`/approve`, `/reject`)
-- [ ] Editorial calendar view (scheduling fields stored, no dedicated view yet)
+- [x] Editorial calendar view (scheduling fields + dashboard view)
 - [x] Telegram adapter (first real publication platform)
-- [ ] DEV.to adapter
-- [ ] Bluesky adapter
+- [x] DEV.to adapter
+- [x] Bluesky adapter
 - [ ] LinkedIn adapter
 - [x] Publication history and statuses
 
 ### V4 — Local interface
 
 - [x] Local API routes (tasks, incidents, memory, drafts, confirmations, cancel, decisions)
-- [ ] Local FastAPI API
-- [ ] Localhost dashboard
-- [ ] Task list UI
-- [ ] Incidents view
-- [ ] Memory view
-- [ ] Drafts view
-- [ ] Model management
+- [x] Admin API with sessions, CSRF, audit log (stdlib HTTP server, no FastAPI dependency)
+- [x] Localhost dashboard (10-page SPA: dashboard, tasks, incidents, memory, drafts, settings, LLM, agent, workflows, social, security, integrations)
+- [x] Task list UI
+- [x] Incidents view
+- [x] Memory view
+- [x] Drafts view / editorial calendar
+- [x] Model management (endpoint CRUD + test + reload)
+- [x] Agent configuration UI (prompt, steps, dry-run, tools, backend)
+- [x] Workflow UI (dry-run, runs, cancel, cron schedule)
+- [x] Security UI (sessions, tool allow-list, audit, secret rotation)
+- [x] Integration connection tests (Telegram, DDGS, SMTP, GitHub)
 
 ### V5 — Optional extensions
 

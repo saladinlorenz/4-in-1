@@ -25,6 +25,10 @@ def test_build_tools_registers_expected_tools(tool_deps):
         "social_create_draft",
         "social_publish",
         "social_list_drafts",
+        "model_generate",
+        "workflow_create",
+        "workflow_run",
+        "workflow_status",
     }
 
 
@@ -120,3 +124,85 @@ def test_notify_and_status_tools(tool_deps, notifier):
     status = json.loads(tools["get_status"]())
     assert status["app"] == "agentos"
     assert "time" in status
+
+
+def test_model_generate_tool(tool_deps):
+    tool_deps.generate_fn = lambda prompt: f"echo:{prompt}"
+    tools = tool_map(tool_deps)
+    assert tools["model_generate"](prompt="hi") == "echo:hi"
+    assert tools["model_generate"](prompt="").startswith("Generation failed")
+    tool_deps.generate_fn = None
+    assert tools["model_generate"](prompt="hi").startswith("Generation unavailable")
+
+
+def test_model_generate_reports_and_redacts_errors(tool_deps):
+    def broken(prompt):
+        raise RuntimeError("quota reached key=sk-abcdefghijkl")
+
+    tool_deps.generate_fn = broken
+    tools = tool_map(tool_deps)
+    output = tools["model_generate"](prompt="hi")
+    assert output.startswith("Generation failed:")
+    assert "sk-abcdefghijkl" not in output
+
+
+def test_workflow_create_validates_inputs(tool_deps):
+    tools = tool_map(tool_deps)
+    assert tools["workflow_create"](name="wf", steps="a").startswith("Workflow unavailable")
+    assert "not created" in tools["workflow_create"](name="", steps="a")
+    assert "name must be" in tools["workflow_create"](name="bad name!", steps="a")
+    assert "1 to 20" in tools["workflow_create"](name="wf", steps="")
+    assert "empty step" in tools["workflow_create"](name="wf", steps="a\n\nb")
+    too_many = "\n".join(str(i) for i in range(21))
+    assert "1 to 20" in tools["workflow_create"](name="wf", steps=too_many)
+
+
+def test_workflow_create_run_status_roundtrip(tool_deps):
+    calls: dict = {}
+
+    def create(name, steps):
+        calls["create"] = (name, steps)
+        return 7
+
+    def run(name, key):
+        calls["run"] = (name, key)
+        return 42
+
+    def runs(name, limit):
+        calls["runs"] = (name, limit)
+        return [
+            {
+                "id": 42,
+                "status": "RUNNING",
+                "workflow_name": "wf",
+                "current_step": 1,
+                "created_at": "2026-10-04",
+                "error": None,
+            }
+        ]
+
+    tool_deps.workflow_create_fn = create
+    tool_deps.workflow_run_fn = run
+    tool_deps.workflow_runs_fn = runs
+    tools = tool_map(tool_deps)
+
+    created = tools["workflow_create"](name="wf", steps="one\ntwo")
+    assert created == "Workflow 'wf' saved as #7 with 2 steps."
+    assert [step["prompt"] for step in calls["create"][1]] == ["one", "two"]
+    assert [step["kind"] for step in calls["create"][1]] == ["agent", "agent"]
+
+    started = tools["workflow_run"](name="wf", idempotency_key="daily:2026-10-04")
+    assert started == "Run #42 of 'wf' started (joined existing active run)."
+    assert calls["run"] == ("wf", "daily:2026-10-04")
+
+    status = tools["workflow_status"]()
+    assert "run #42 [RUNNING] wf step=1" in status
+    assert calls["runs"] == ("", 5)
+
+
+def test_workflow_run_not_found_and_status_empty(tool_deps):
+    tools = tool_map(tool_deps)
+    tool_deps.workflow_run_fn = lambda name, key: None
+    assert "not found" in tools["workflow_run"](name="missing")
+    tool_deps.workflow_runs_fn = lambda name, limit: []
+    assert tools["workflow_status"]() == "No workflow runs found."

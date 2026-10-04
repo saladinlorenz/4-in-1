@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.resources
 import logging
 import threading
 import time
@@ -7,6 +8,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+import yaml
 from smolagents import ToolCallingAgent
 
 from config.logging import redact
@@ -14,13 +16,15 @@ from config.settings import Settings
 from freellmapi_adapter import LLMRouter
 from memory import Storage, TaskStatus
 
+from .backends import get_backend
 from .model_router import RoutedModel
-from .permissions import filter_tools
+from .permissions import ALLOWED_TOOL_NAMES, filter_tools
 from .tools import ToolDeps, build_tools, default_fetch, default_search
 
 logger = logging.getLogger(__name__)
 
 TELEGRAM_MESSAGE_LIMIT = 4000
+PROMPT_RESOURCE = "smolagents.prompts"
 
 
 def chunk_text(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
@@ -44,11 +48,13 @@ class AgentRunner:
         agent_factory: Callable[[], Any] | None = None,
         search_fn: Callable[[str, int], list[dict]] | None = None,
         fetch_fn: Callable[[str], str] | None = None,
+        agent_config: Any | None = None,
     ) -> None:
         self.settings = settings
         self.storage = storage
         self.router = router
         self.notifier = notifier
+        self.agent_config = agent_config
         self.started_at = time.time()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-run")
         self._lock = threading.Lock()
@@ -56,13 +62,78 @@ class AgentRunner:
         self._active_task_id: int | None = None
         self.task_listeners: list[Callable[[int, str, str | None], None]] = []
         self.confirmation_listeners: list[Callable[[int, str], None]] = []
+        self.workflow_engine: Any = None
         self._search_fn = search_fn or (
             lambda query, count: default_search(query, count, settings.web_search_timeout)
         )
         self._fetch_fn = fetch_fn or (
             lambda url: default_fetch(url, settings.web_fetch_timeout, settings.web_fetch_max_bytes)
         )
-        self._agent_factory = agent_factory or self._build_agent
+        self._agent_factory = agent_factory or self._build_backend_agent
+
+    def _build_backend_agent(self) -> Any:
+        """Resolve the active backend (settings) and build its runnable agent.
+
+        Exactly one backend runs per task: unknown or unavailable backends
+        raise instead of silently falling back to a second engine.
+        """
+        name = "smolagents"
+        if self.agent_config is not None:
+            try:
+                name = str(self.agent_config.effective().get("backend") or "smolagents")
+            except Exception:
+                logger.warning("cannot read backend setting, using smolagents", exc_info=True)
+        backend = get_backend(name)
+        if backend is None:
+            raise RuntimeError(f"agent backend unavailable: {name}")
+        ok, reason = backend.availability()
+        if not ok:
+            raise RuntimeError(f"agent backend {name} unavailable: {reason}")
+        return backend.build(self)
+
+    def _agent_options(self) -> dict[str, Any]:
+        """Effective agent options: `.env` defaults overridden by SQLite settings.
+
+        Without an ``agent_config`` service (tests, minimal wiring) the pure
+        `.env` defaults apply unchanged.
+        """
+        defaults = {
+            "system_prompt": "",
+            "max_steps": self.settings.agent_max_steps,
+            "max_output_chars": self.settings.agent_max_output_chars,
+            "temperature": 0.3,
+            "allowed_tools": frozenset(ALLOWED_TOOL_NAMES),
+        }
+        if self.agent_config is None:
+            return defaults
+        try:
+            config = self.agent_config.effective()
+            allowed = self.agent_config.allowed_tools()
+        except Exception:
+            logger.warning("agent settings unreadable, using defaults", exc_info=True)
+            return defaults
+        return {
+            "system_prompt": str(config.get("system_prompt") or ""),
+            "max_steps": int(config.get("max_steps") or defaults["max_steps"]),
+            "max_output_chars": int(
+                config.get("max_output_chars") or defaults["max_output_chars"]
+            ),
+            "temperature": float(config.get("temperature", defaults["temperature"])),
+            "allowed_tools": allowed,
+        }
+
+    @staticmethod
+    def _prompt_templates(system_prompt: str) -> dict[str, Any]:
+        """Default ToolCallingAgent templates + custom instructions appended."""
+        templates = yaml.safe_load(
+            importlib.resources.files(PROMPT_RESOURCE)
+            .joinpath("toolcalling_agent.yaml")
+            .read_text()
+        )
+        custom = system_prompt.strip()
+        if custom:
+            templates["system_prompt"] = templates["system_prompt"].rstrip() + "\n\n" + custom
+        return templates
 
     def _build_agent(self) -> ToolCallingAgent:
         active_task_id = self._active_task_id
@@ -81,18 +152,24 @@ class AgentRunner:
                 if active_task_id is not None
                 else None
             ),
+            generate_fn=self._generate_text,
+            workflow_create_fn=self._workflow_create,
+            workflow_run_fn=self._workflow_run,
+            workflow_runs_fn=self._workflow_runs,
         )
-        tools = filter_tools(build_tools(deps))
+        options = self._agent_options()
+        tools = filter_tools(build_tools(deps), allowed=options["allowed_tools"])
         model = RoutedModel(
             self.router,
             model_id="auto",
             tool_choice=self.settings.llm_tool_choice,
-            temperature=0.3,
+            temperature=options["temperature"],
         )
         return ToolCallingAgent(
             tools=tools,
             model=model,
-            max_steps=self.settings.agent_max_steps,
+            max_steps=options["max_steps"],
+            prompt_templates=self._prompt_templates(options["system_prompt"]),
         )
 
     def submit(self, prompt: str, *, chat_id: int | None = None, kind: str = "chat") -> int:
@@ -131,6 +208,40 @@ class AgentRunner:
                     confirmation_id,
                     exc_info=True,
                 )
+
+    # --- model / workflow helpers exposed to agent tools -----------------
+
+    def _generate_text(self, prompt: str) -> str:
+        payload = {
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.3,
+        }
+        raw = self.router.chat(payload)
+        choices = raw.get("choices") or []
+        if not choices:
+            raise RuntimeError("model returned no choices")
+        content = (choices[0].get("message") or {}).get("content")
+        if content is None:
+            raise RuntimeError("model returned no content")
+        return str(content)[:16_000]
+
+    def _workflow_create(self, name: str, steps: list[dict]) -> int:
+        engine = self.workflow_engine
+        if engine is None:
+            raise RuntimeError("workflow engine is not attached")
+        return int(engine.register(name, steps))
+
+    def _workflow_run(self, name: str, idempotency_key: str | None) -> int | None:
+        engine = self.workflow_engine
+        if engine is None:
+            raise RuntimeError("workflow engine is not attached")
+        return engine.enqueue(name, idempotency_key=idempotency_key)
+
+    def _workflow_runs(self, workflow: str, limit: int) -> list[dict]:
+        rows = self.storage.list_runs(limit=limit)
+        if workflow:
+            rows = [row for row in rows if row.get("workflow_name") == workflow]
+        return rows
 
     def resume(self) -> dict[str, int]:
         """Restart recovery: requeue work left behind by a previous process.
@@ -253,7 +364,7 @@ class AgentRunner:
                 agent.interrupt_switch = True
             answer = agent.run(prompt)
             text = str(answer)
-            limit = self.settings.agent_max_output_chars
+            limit = self._agent_options()["max_output_chars"]
             if len(text) > limit:
                 text = text[:limit] + "\n...[truncated]"
             self.storage.add_message("user", prompt, chat_id=chat_id, task_id=task_id)

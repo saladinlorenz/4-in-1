@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -114,6 +115,28 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
     cron TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
     last_enqueued_at TEXT
+);
+CREATE TABLE IF NOT EXISTS settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL UNIQUE,
+    value_json TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'general',
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL DEFAULT 'system'
+);
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    action TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS admin_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_hash TEXT NOT NULL UNIQUE,
+    csrf_token TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
 );
 """
 
@@ -685,6 +708,142 @@ class Storage:
                 (enqueued_at, name),
             )
             return cursor.rowcount == 1
+
+    def delete_scheduled_job(self, name: str) -> bool:
+        with self._conn() as connection:
+            cursor = connection.execute(
+                "DELETE FROM scheduled_jobs WHERE name = ?", (name,)
+            )
+            return cursor.rowcount >= 1
+
+    # --- settings (non-sensitive) / audit --------------------------------
+
+    def get_setting(self, key: str) -> Any | None:
+        row = self._conn().execute(
+            "SELECT value_json FROM settings WHERE key = ?", (key,)
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row["value_json"])
+        except ValueError:
+            return None
+
+    def set_setting(
+        self,
+        key: str,
+        value: Any,
+        *,
+        category: str = "general",
+        updated_by: str = "system",
+    ) -> bool:
+        payload = json.dumps(value, ensure_ascii=False)
+        now = utc_now()
+        with self._conn() as connection:
+            connection.execute(
+                "INSERT INTO settings (key, value_json, category, updated_at, updated_by)"
+                " VALUES (?, ?, ?, ?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET"
+                " value_json = excluded.value_json,"
+                " category = excluded.category,"
+                " updated_at = excluded.updated_at,"
+                " updated_by = excluded.updated_by",
+                (key, payload, category, now, updated_by),
+            )
+        return True
+
+    def list_settings(self, category: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM settings"
+        params: list[Any] = []
+        if category:
+            query += " WHERE category = ?"
+            params.append(category)
+        query += " ORDER BY key"
+        rows = self._conn().execute(query, params).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["value"] = json.loads(item.pop("value_json"))
+            except ValueError:
+                item["value"] = None
+            result.append(item)
+        return result
+
+    def delete_setting(self, key: str) -> bool:
+        with self._conn() as connection:
+            cursor = connection.execute("DELETE FROM settings WHERE key = ?", (key,))
+            return cursor.rowcount == 1
+
+    def add_audit(self, actor: str, action: str, detail: str = "") -> int:
+        with self._conn() as connection:
+            cursor = connection.execute(
+                "INSERT INTO audit_log (created_at, actor, action, detail)"
+                " VALUES (?, ?, ?, ?)",
+                (utc_now(), str(actor), str(action), str(detail)[:500]),
+            )
+            return int(cursor.lastrowid)
+
+    def recent_audit(self, limit: int = 50) -> list[dict[str, Any]]:
+        rows = self._conn().execute(
+            "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    # --- admin sessions ---------------------------------------------------
+
+    def create_session(self, token_hash: str, csrf_token: str, expires_at: str) -> int:
+        now = utc_now()
+        with self._conn() as connection:
+            cursor = connection.execute(
+                "INSERT INTO admin_sessions"
+                " (token_hash, csrf_token, created_at, expires_at)"
+                " VALUES (?, ?, ?, ?)",
+                (token_hash, csrf_token, now, expires_at),
+            )
+            return int(cursor.lastrowid)
+
+    def find_session(self, token_hash: str) -> dict[str, Any] | None:
+        row = self._conn().execute(
+            "SELECT * FROM admin_sessions WHERE token_hash = ?", (token_hash,)
+        ).fetchone()
+        if row is None:
+            return None
+        session = dict(row)
+        if str(session["expires_at"]) <= utc_now():
+            self.delete_session(token_hash)
+            return None
+        return session
+
+    def delete_session(self, token_hash: str) -> bool:
+        with self._conn() as connection:
+            cursor = connection.execute(
+                "DELETE FROM admin_sessions WHERE token_hash = ?", (token_hash,)
+            )
+            return cursor.rowcount == 1
+
+    def list_sessions(self) -> list[dict[str, Any]]:
+        """Active sessions as SAFE columns only (never token/csrf material)."""
+        rows = self._conn().execute(
+            "SELECT id, created_at, expires_at FROM admin_sessions"
+            " WHERE expires_at > ? ORDER BY id",
+            (utc_now(),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_session_by_id(self, session_id: int) -> bool:
+        with self._conn() as connection:
+            cursor = connection.execute(
+                "DELETE FROM admin_sessions WHERE id = ?", (session_id,)
+            )
+            return cursor.rowcount == 1
+
+    def purge_expired_sessions(self) -> int:
+        with self._conn() as connection:
+            cursor = connection.execute(
+                "DELETE FROM admin_sessions WHERE expires_at <= ?", (utc_now(),)
+            )
+            return cursor.rowcount
 
     # --- supervision -----------------------------------------------------
 

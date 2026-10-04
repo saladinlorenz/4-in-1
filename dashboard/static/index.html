@@ -1,0 +1,887 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentOS — Console</title>
+<style>
+:root{--bg:#0f141a;--panel:#161d26;--panel2:#1d2732;--line:#2a3644;--text:#dce6f2;--muted:#8aa0b8;--accent:#3f8cff;--ok:#31c48d;--warn:#f4b740;--err:#f26d6d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+h1{font-size:18px;margin:0 0 12px}h2{font-size:15px;margin:18px 0 8px}
+a{color:var(--accent);text-decoration:none}
+.hidden{display:none!important}
+.wrap{display:flex;min-height:100vh}
+aside{width:210px;background:var(--panel);border-right:1px solid var(--line);padding:14px 10px;flex-shrink:0}
+aside .brand{font-weight:700;font-size:16px;padding:6px 8px 14px;letter-spacing:.4px}
+aside nav a{display:block;padding:8px 10px;border-radius:8px;color:var(--muted);margin-bottom:2px}
+aside nav a.active{background:var(--panel2);color:var(--text)}
+aside .foot{margin-top:18px;padding:0 8px;font-size:12px;color:var(--muted)}
+main{flex:1;padding:22px 26px;max-width:1080px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px}
+.grid{display:grid;gap:12px}
+.grid.c2{grid-template-columns:1fr 1fr}
+.grid.c3{grid-template-columns:repeat(3,1fr)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+label{display:block;color:var(--muted);font-size:12px;margin:8px 0 3px}
+input,select,textarea{width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 10px;font:inherit}
+textarea{min-height:64px;resize:vertical}
+button{background:var(--accent);border:0;color:#fff;border-radius:8px;padding:8px 14px;font:inherit;cursor:pointer}
+button.sec{background:var(--panel2);border:1px solid var(--line);color:var(--text)}
+button.danger{background:#7a2f36}
+button.small{padding:4px 10px;font-size:12px}
+button:disabled{opacity:.5;cursor:default}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.badge{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;background:var(--panel2);border:1px solid var(--line)}
+.badge.ok{color:var(--ok);border-color:var(--ok)}
+.badge.err{color:var(--err);border-color:var(--err)}
+.badge.warn{color:var(--warn);border-color:var(--warn)}
+.muted{color:var(--muted)}
+.mono{font-family:ui-monospace,Consolas,monospace;font-size:12px}
+#toast{position:fixed;right:18px;bottom:18px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 14px;display:none;max-width:380px;z-index:50}
+#toast.err{border-color:var(--err);color:var(--err)}
+.auth{max-width:360px;margin:9vh auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:24px}
+.auth h1{margin-bottom:4px}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 10px;font-size:13px}
+.kv div:nth-child(odd){color:var(--muted)}
+</style>
+</head>
+<body>
+<div id="toast"></div>
+
+<div id="auth" class="hidden">
+  <div class="auth">
+    <h1>AgentOS</h1>
+    <p class="muted" id="auth-hint">Console locale</p>
+    <div id="setup-form" class="hidden">
+      <label>Mot de passe admin (8 caractères min.)</label>
+      <input type="password" id="setup-pw" autocomplete="new-password">
+      <label>Répéter</label>
+      <input type="password" id="setup-pw2" autocomplete="new-password">
+      <div class="row" style="margin-top:14px"><button id="setup-btn">Créer</button></div>
+    </div>
+    <div id="login-form" class="hidden">
+      <label>Mot de passe admin</label>
+      <input type="password" id="login-pw" autocomplete="current-password">
+      <div class="row" style="margin-top:14px"><button id="login-btn">Se connecter</button></div>
+    </div>
+  </div>
+</div>
+
+<div id="ui" class="hidden wrap">
+  <aside>
+    <div class="brand">AgentOS</div>
+    <nav id="nav">
+      <a href="#/overview" data-page="overview">Vue d'ensemble</a>
+      <a href="#/models" data-page="models">Modèles</a>
+      <a href="#/general" data-page="general">Général</a>
+      <a href="#/agent" data-page="agent">Agent</a>
+      <a href="#/integrations" data-page="integrations">Intégrations</a>
+      <a href="#/social" data-page="social">Réseaux sociaux</a>
+      <a href="#/security" data-page="security">Sécurité</a>
+      <a href="#/workflows" data-page="workflows">Workflows</a>
+      <a href="#/memory" data-page="memory">Mémoire</a>
+      <a href="#/logs" data-page="logs">Journaux</a>
+    </nav>
+    <div class="foot">
+      <div id="status-line" class="mono">—</div>
+      <div class="row" style="margin-top:8px">
+        <button class="sec small" id="logout-btn">Déconnexion</button>
+      </div>
+    </div>
+  </aside>
+  <main>
+    <section id="page-overview" class="page hidden">
+      <h1>Vue d'ensemble</h1>
+      <div class="grid c3" id="ov-cards"></div>
+      <div class="card"><h2>Endpoints LLM</h2><div id="ov-llm"></div></div>
+      <div class="card"><h2>Derniers incidents</h2><div id="ov-incidents"></div></div>
+    </section>
+
+    <section id="page-models" class="page hidden">
+      <h1>Modèles / freellmapi</h1>
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <h2 style="margin:0">Endpoints</h2>
+          <div class="row">
+            <button class="sec small" id="llm-reload">Recharger</button>
+            <button class="small" id="llm-new">+ Ajouter</button>
+          </div>
+        </div>
+        <div id="llm-list" style="margin-top:10px"></div>
+      </div>
+      <div class="card hidden" id="llm-form-card">
+        <h2 id="llm-form-title">Nouvel endpoint</h2>
+        <div class="grid c2">
+          <div><label>Nom</label><input id="f-name" placeholder="Gemini Flash"></div>
+          <div><label>Modèle</label><input id="f-model" placeholder="auto"></div>
+          <div><label>Base URL</label><input id="f-base" placeholder="https://…/v1"></div>
+          <div><label>Timeout (s)</label><input id="f-timeout" type="number" value="60"></div>
+          <div><label>Priorité (1 = première)</label><input id="f-priority" type="number" value="100"></div>
+          <div><label>Tentatives (0 = défaut)</label><input id="f-attempts" type="number" value="0"></div>
+          <div><label>Cooldown (s, 0 = défaut)</label><input id="f-cooldown" type="number" value="0"></div>
+          <div><label>Max tokens</label><input id="f-maxtok" type="number" placeholder="vide = non imposé"></div>
+          <div><label>Température</label><input id="f-temp" type="number" step="0.1" placeholder="vide = non imposée"></div>
+          <div><label>Activé</label><select id="f-enabled"><option value="true">oui</option><option value="false">non</option></select></div>
+        </div>
+        <label>Clé API (remplacement uniquement — jamais réaffichée)</label>
+        <input id="f-key" type="password" autocomplete="off" placeholder="laisser vide pour conserver">
+        <div class="row" style="margin-top:14px">
+          <button id="llm-save">Enregistrer</button>
+          <button class="sec" id="llm-cancel">Annuler</button>
+          <span class="muted" id="llm-key-state"></span>
+        </div>
+      </div>
+      <div class="card"><h2>Tester la connexion</h2><div id="llm-test-out" class="mono muted">Aucun test.</div></div>
+    </section>
+
+    <section id="page-general" class="page hidden">
+      <h1>Réglages généraux</h1>
+      <div class="card"><div id="set-general"></div></div>
+    </section>
+
+    <section id="page-agent" class="page hidden">
+      <h1>Réglages agent</h1>
+      <div class="card">
+        <p class="muted">Appliqués à la prochaine tâche, sans redémarrage. L'agent ne peut pas modifier lui-même ces réglages.</p>
+        <label>Prompt système (ajouté aux instructions par défaut)</label>
+        <textarea id="a-prompt" placeholder="Ex. Toujours répondre en français."></textarea>
+        <div class="grid c3">
+          <div><label>Backend agent</label><select id="a-backend"></select></div>
+          <div><label>Max steps</label><input id="a-steps" type="number" min="1" max="50"></div>
+          <div><label>Sortie max (caractères)</label><input id="a-out" type="number" min="200"></div>
+          <div><label>Température</label><input id="a-temp" type="number" step="0.1" min="0" max="2"></div>
+          <div><label>Dry-run global</label><select id="a-dry"><option value="false">non</option><option value="true">oui — bloque les effets externes</option></select></div>
+        </div>
+        <h2>Outils autorisés</h2>
+        <div id="a-tools" class="row"></div>
+        <div class="row" style="margin-top:14px">
+          <button id="a-save">Enregistrer</button>
+          <span class="muted" id="a-note"></span>
+        </div>
+      </div>
+    </section>
+
+    <section id="page-social" class="page hidden">
+      <h1>Réseaux sociaux</h1>
+      <div class="card">
+        <h2>Adaptateurs</h2>
+        <p class="muted">Publication réelle uniquement après confirmation humaine (jamais simulée). « Tester » vérifie la connexion sans rien publier. Clés : <span class="mono">DEVTO_API_KEY</span>, <span class="mono">BLUESKY_HANDLE</span> + <span class="mono">BLUESKY_APP_PASSWORD</span> (page Intégrations).</p>
+        <div id="social-adapters"></div>
+      </div>
+      <div class="card">
+        <h2>Brouillons &amp; calendrier</h2>
+        <div id="social-drafts"></div>
+      </div>
+      <div class="card"><h2>Réglages social</h2><div id="set-social"></div></div>
+    </section>
+
+    <section id="page-integrations" class="page hidden">
+      <h1>Intégrations &amp; clés API</h1>
+      <div class="card">
+        <h2>Secrets</h2>
+        <p class="muted">Valeurs jamais affichées : seul l'état « Configurée (se termine par …) » est visible.</p>
+        <div id="secret-list"></div>
+        <h2>Ajouter / remplacer un secret</h2>
+        <div class="grid c3">
+          <div><label>Nom</label><input id="s-key" placeholder="CUSTOM_TOKEN"></div>
+          <div><label>Valeur</label><input id="s-value" type="password" autocomplete="off"></div>
+          <div style="align-self:end"><button id="s-set">Enregistrer</button></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Tests de connexion</h2>
+        <p class="muted">Vraie connexion en lecture seule (getMe Telegram, recherche DDGS, handshake SMTP, /user GitHub) — rien n'est envoyé ni publié. Les valeurs de clés ne sont jamais affichées.</p>
+        <div id="int-tests"></div>
+      </div>
+    </section>
+
+    <section id="page-security" class="page hidden">
+      <h1>Sécurité</h1>
+      <div class="card">
+        <h2>Sessions actives</h2>
+        <p class="muted">Liste serveur (jamais de jeton affiché). Révoquer coupe immédiatement l'accès de cette session.</p>
+        <div id="sec-sessions"></div>
+      </div>
+      <div class="card">
+        <h2>Rotation de secrets</h2>
+        <p class="muted">Remplace la valeur existante (remplacement seulement, la valeur n'est jamais relue). Le hash du mot de passe admin n'est pas rotatable ici.</p>
+        <div class="grid c3">
+          <div><label>Secret</label><select id="rot-key"></select></div>
+          <div><label>Nouvelle valeur</label><input id="rot-value" type="password" autocomplete="off"></div>
+          <div style="align-self:end"><button id="rot-btn">Tourner</button></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <h2 style="margin:0">Journal d'audit</h2>
+          <button class="sec small" id="audit-refresh">Actualiser</button>
+        </div>
+        <div id="audit-list" style="margin-top:10px"></div>
+      </div>
+      <div class="card">
+        <h2>Permissions outils</h2>
+        <p class="muted">Whitelist statique <span class="mono">ALLOWED_TOOL_NAMES</span> servie par l'API et appliquée par le backend de l'agent — l'agent ne peut pas modifier ses propres permissions. Les outils sensibles (shell, suppression, publication) exigent une confirmation humaine.</p>
+        <div id="tool-list" class="row"></div>
+      </div>
+    </section>
+
+    <section id="page-workflows" class="page hidden">
+      <h1>Workflows</h1>
+      <div class="card">
+        <h2>Définitions</h2>
+        <p class="muted">Format JSON fermé (clés : <code>name</code> + <code>steps</code> ; kinds : <code>agent</code> / <code>confirmation</code>). Validation stricte côté serveur : clés inconnues refusées.</p>
+        <div id="wf-list"></div>
+        <h2 id="wf-form-title">Nouveau workflow</h2>
+        <div class="row"><label style="min-width:52px">Nom</label><input id="wf-name" placeholder="daily_digest" value="my_workflow"></div>
+        <label>Steps (JSON)</label>
+        <textarea id="wf-steps" rows="8" spellcheck="false" class="set-val">[
+  {"name": "one", "kind": "agent", "prompt": "Do the first mission. Context: {context}"},
+  {"name": "gate", "kind": "confirmation", "prompt": "Publish the result?"},
+  {"name": "two", "kind": "agent", "prompt": "Do the second mission"}
+]</textarea>
+        <div class="row" style="margin-top:8px">
+          <button class="small sec" id="wf-dry">Dry-run (valider sans enregistrer)</button>
+          <button id="wf-save">Enregistrer</button>
+          <span id="wf-dry-out" class="muted"></span>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Runs</h2>
+        <div id="wf-runs"></div>
+      </div>
+      <div class="card">
+        <h2>Planification cron</h2>
+        <div id="wf-jobs"></div>
+        <div class="grid c3" style="margin-top:8px">
+          <div><label>Job</label><input id="job-name" placeholder="daily_0800"></div>
+          <div><label>Workflow</label><input id="job-wf" placeholder="daily_ai_news"></div>
+          <div class="row">
+            <div><label>Heure</label><input id="job-hour" value="8" style="width:56px"></div>
+            <div><label>Min</label><input id="job-min" value="0" style="width:56px"></div>
+          </div>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button id="job-save">Planifier / mettre à jour</button>
+          <button class="small danger" id="job-del">Supprimer le job</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="page-memory" class="page hidden">
+      <h1>Mémoire</h1>
+      <div class="card"><div id="mem-list"></div></div>
+    </section>
+
+    <section id="page-logs" class="page hidden">
+      <h1>Journaux &amp; incidents</h1>
+      <div class="card"><div id="log-list"></div></div>
+    </section>
+  </main>
+</div>
+
+<script>
+"use strict";
+let csrf = null;
+const $ = (id) => document.getElementById(id);
+
+function toast(msg, isErr) {
+  const el = $("toast");
+  el.textContent = msg;
+  el.className = isErr ? "err" : "";
+  el.style.display = "block";
+  clearTimeout(el._t);
+  el._t = setTimeout(() => (el.style.display = "none"), 4000);
+}
+
+async function api(method, path, body) {
+  const headers = { "Content-Type": "application/json" };
+  if (csrf) headers["X-CSRF-Token"] = csrf;
+  const res = await fetch(path, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  let data = {};
+  try { data = await res.json(); } catch (_) {}
+  if (res.status === 401) { showAuth(); throw new Error("Session expirée"); }
+  if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+  return data;
+}
+
+function showAuth(setupRequired) {
+  $("ui").classList.add("hidden");
+  $("auth").classList.remove("hidden");
+  const setup = setupRequired === true;
+  $("setup-form").classList.toggle("hidden", !setup);
+  $("login-form").classList.toggle("hidden", setup);
+  $("auth-hint").textContent = setup
+    ? "Première utilisation : créez le mot de passe admin"
+    : "Connectez-vous pour continuer";
+}
+
+function enterApp() {
+  $("auth").classList.add("hidden");
+  $("ui").classList.remove("hidden");
+  route();
+}
+
+async function boot() {
+  try {
+    const s = await api("GET", "/api/session");
+    csrf = s.csrf_token;
+    enterApp();
+  } catch (err) {
+    if (String(err.message).includes("Session expirée")) return;
+    try {
+      const probe = await fetch("/api/session");
+      const data = await probe.json().catch(() => ({}));
+      showAuth(data.setup_required === true);
+    } catch (_) { showAuth(false); }
+  }
+}
+
+$("setup-btn").onclick = async () => {
+  const pw = $("setup-pw").value, pw2 = $("setup-pw2").value;
+  if (pw.length < 8) return toast("8 caractères minimum", true);
+  if (pw !== pw2) return toast("Les mots de passe diffèrent", true);
+  try {
+    await api("POST", "/api/setup", { password: pw });
+    const login = await api("POST", "/api/login", { password: pw });
+    csrf = login.csrf_token;
+    $("setup-pw").value = $("setup-pw2").value = "";
+    toast("Mot de passe créé");
+    enterApp();
+  } catch (err) { toast(err.message, true); }
+};
+
+$("login-btn").onclick = async () => {
+  try {
+    const login = await api("POST", "/api/login", { password: $("login-pw").value });
+    csrf = login.csrf_token;
+    $("login-pw").value = "";
+    enterApp();
+  } catch (err) { toast(err.message, true); }
+};
+
+$("logout-btn").onclick = async () => {
+  try { await api("POST", "/api/logout", {}); } catch (_) {}
+  csrf = null;
+  showAuth(false);
+};
+
+/* ---------- routing ---------- */
+const loaders = {
+  overview: loadOverview, models: loadModels, general: () => loadSettings("general", "set-general"),
+  agent: loadAgent, social: loadSocial,
+  integrations: loadIntegrations, security: loadSecurity, workflows: loadWorkflows,
+  memory: loadMemory, logs: loadLogs,
+};
+
+function route() {
+  const page = (location.hash.replace("#/", "") || "overview").split("?")[0];
+  document.querySelectorAll(".page").forEach((el) => el.classList.add("hidden"));
+  const section = $("page-" + page) || $("page-overview");
+  section.classList.remove("hidden");
+  document.querySelectorAll("#nav a").forEach((a) =>
+    a.classList.toggle("active", a.dataset.page === (section.id.replace("page-", ""))));
+  const loader = loaders[section.id.replace("page-", "")];
+  if (loader) loader().catch((err) => toast(err.message, true));
+}
+window.addEventListener("hashchange", route);
+
+function table(headers, rows) {
+  if (!rows.length) return '<p class="muted">Aucune donnée.</p>';
+  return "<table><tr>" + headers.map((h) => "<th>" + h + "</th>").join("") + "</tr>" +
+    rows.map((r) => "<tr>" + r.map((c) => "<td>" + c + "</td>").join("") + "</tr>").join("") + "</table>";
+}
+const esc = (v) => String(v ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+/* ---------- overview ---------- */
+async function loadOverview() {
+  const st = await api("GET", "/api/status");
+  $("status-line").textContent = (st.status || "?") + " · v" + (st.version || "?");
+  const counts = st.task_counts || {};
+  $("ov-cards").innerHTML = [
+    ["Statut", st.status === "ok" ? '<span class="badge ok">ok</span>' : '<span class="badge err">' + esc(st.status) + "</span>"],
+    ["Uptime", Math.round(st.uptime_seconds || 0) + " s"],
+    ["SQLite", st.db ? '<span class="badge ok">ok</span>' : '<span class="badge err">erreur</span>'],
+    ["Tâches", Object.entries(counts).map(([k, v]) => k + "=" + v).join(" · ") || "—"],
+    ["Tâche active", st.current_task ? "#" + st.current_task : "<i>aucune</i>"],
+    ["Telegram", st.telegram_configured ? '<span class="badge ok">configuré</span>' : '<span class="badge warn">absent</span>'],
+  ].map(([k, v]) => '<div class="card"><div class="muted" style="font-size:12px">' + k +
+    '</div><div style="font-size:15px">' + v + "</div></div>").join("");
+
+  try {
+    const llm = await api("GET", "/api/llm/endpoints");
+    $("ov-llm").innerHTML = table(
+      ["Nom", "État", "Priorité", "Latence", "Succès", "Dernière erreur"],
+      (llm.health || []).map((h) => [
+        esc(h.name), esc(h.state) + (h.enabled ? "" : " <span class='badge'>désactivé</span>"),
+        h.priority, h.last_latency_ms == null ? "—" : h.last_latency_ms + " ms",
+        h.success_count, esc(h.last_error || "—"),
+      ]));
+  } catch (_) { $("ov-llm").innerHTML = '<p class="muted">Indisponible.</p>'; }
+
+  const inc = await api("GET", "/api/incidents?limit=5");
+  $("ov-incidents").innerHTML = table(
+    ["Quand", "Type", "Message"],
+    (inc.items || []).map((i) => [esc(i.created_at), esc(i.kind || i.type || ""), esc(i.message || i.detail || "")]));
+}
+
+/* ---------- settings pages ---------- */
+async function loadSettings(category, containerId) {
+  const data = await api("GET", "/api/settings?category=" + category);
+  const box = $(containerId);
+  const rows = (data.items || []).map((item) => {
+    const value = typeof item.value === "string" ? item.value : JSON.stringify(item.value);
+    return [esc(item.key), "<textarea data-key='" + esc(item.key) + "' class='set-val'>" + esc(value) + "</textarea>",
+      "<div class='row'><button class='small' data-key='" + esc(item.key) + "' data-act='save'>OK</button>" +
+      "<button class='small danger' data-key='" + esc(item.key) + "' data-act='del'>Suppr</button></div>"];
+  });
+  box.innerHTML =
+    (rows.length ? table(["Clé", "Valeur", ""], rows) : '<p class="muted">Aucun réglage dans cette catégorie.</p>') +
+    "<h2>Ajouter</h2><div class='grid c3'><div><label>Clé</label><input class='new-key' placeholder='ex. agent.max_steps'></div>" +
+    "<div><label>Valeur (texte ou JSON)</label><input class='new-val' placeholder='12'></div>" +
+    "<div style='align-self:end'><button class='add-btn'>Ajouter</button></div></div>";
+
+  box.querySelectorAll("button[data-act='save']").forEach((btn) => {
+    btn.onclick = async () => {
+      const key = btn.dataset.key;
+      const raw = box.querySelector("textarea[data-key='" + key + "']").value;
+      let value = raw;
+      try { value = JSON.parse(raw); } catch (_) {}
+      try { await api("POST", "/api/settings", { key, value, category }); toast("Réglage enregistré"); }
+      catch (err) { toast(err.message, true); }
+    };
+  });
+  box.querySelectorAll("button[data-act='del']").forEach((btn) => {
+    btn.onclick = async () => {
+      try { await api("POST", "/api/settings/delete", { key: btn.dataset.key }); toast("Supprimé"); loadSettings(category, containerId); }
+      catch (err) { toast(err.message, true); }
+    };
+  });
+  box.querySelector(".add-btn").onclick = async () => {
+    const key = box.querySelector(".new-key").value.trim();
+    const raw = box.querySelector(".new-val").value;
+    if (!key) return toast("Clé requise", true);
+    let value = raw;
+    try { value = JSON.parse(raw); } catch (_) {}
+    try { await api("POST", "/api/settings", { key, value, category }); toast("Réglage ajouté"); loadSettings(category, containerId); }
+    catch (err) { toast(err.message, true); }
+  };
+}
+
+/* ---------- models ---------- */
+let llmItems = [];
+let llmEditId = null;
+
+async function loadModels() {
+  const data = await api("GET", "/api/llm/endpoints");
+  llmItems = data.items || [];
+  $("llm-list").innerHTML = table(
+    ["#", "Nom", "Modèle", "URL", "État", "Priorité", "Clé", ""],
+    llmItems.map((e) => [
+      e.id, esc(e.name || "—"), esc(e.model), "<span class='mono'>" + esc(e.base_url) + "</span>",
+      e.enabled ? '<span class="badge ok">activé</span>' : '<span class="badge">désactivé</span>',
+      e.priority,
+      e.api_key_configured ? "<span class='badge ok'>" + esc(e.api_key_masked) + "</span>" : '<span class="badge">absente</span>',
+      "<div class='row'>" +
+        "<button class='small' data-act='edit' data-id='" + e.id + "'>Éditer</button>" +
+        "<button class='small sec' data-act='test' data-id='" + e.id + "'>Tester</button>" +
+        "<button class='small sec' data-act='toggle' data-id='" + e.id + "'>" + (e.enabled ? "Désactiver" : "Activer") + "</button>" +
+        "<button class='small danger' data-act='del' data-id='" + e.id + "'>Suppr</button></div>",
+    ]));
+  $("llm-list").querySelectorAll("button").forEach((btn) => {
+    const id = Number(btn.dataset.id);
+    const item = llmItems.find((e) => e.id === id);
+    btn.onclick = async () => {
+      try {
+        if (btn.dataset.act === "edit") return llmOpenForm(item);
+        if (btn.dataset.act === "test") {
+          const out = await api("POST", "/api/llm/endpoints/test", { id });
+          $("llm-test-out").textContent = out.ok
+            ? "#" + id + " : OK (" + out.latency_ms + " ms)"
+            : "#" + id + " : ÉCHEC — " + out.error;
+          return;
+        }
+        if (btn.dataset.act === "toggle") await api("POST", "/api/llm/endpoints/update", { id, enabled: !item.enabled });
+        if (btn.dataset.act === "del") await api("POST", "/api/llm/endpoints/delete", { id });
+        await loadModels();
+      } catch (err) { toast(err.message, true); }
+    };
+  });
+}
+
+function llmOpenForm(item) {
+  llmEditId = item ? item.id : null;
+  $("llm-form-card").classList.remove("hidden");
+  $("llm-form-title").textContent = item ? "Éditer l'endpoint #" + item.id : "Nouvel endpoint";
+  $("f-name").value = item ? item.name || "" : "";
+  $("f-model").value = item ? item.model : "";
+  $("f-base").value = item ? item.base_url : "";
+  $("f-timeout").value = item ? item.timeout : 60;
+  $("f-priority").value = item ? item.priority : 100;
+  $("f-attempts").value = item ? item.attempts : 0;
+  $("f-cooldown").value = item ? item.cooldown_seconds : 0;
+  $("f-maxtok").value = item && item.max_tokens != null ? item.max_tokens : "";
+  $("f-temp").value = item && item.temperature != null ? item.temperature : "";
+  $("f-enabled").value = item ? String(item.enabled) : "true";
+  $("f-key").value = "";
+  $("llm-key-state").textContent = item
+    ? (item.api_key_configured ? "Clé : " + item.api_key_masked : "Clé : absente")
+    : "";
+  $("llm-form-card").scrollIntoView({ behavior: "smooth" });
+}
+
+$("llm-new").onclick = () => llmOpenForm(null);
+$("llm-cancel").onclick = () => $("llm-form-card").classList.add("hidden");
+$("llm-reload").onclick = async () => {
+  try { const r = await api("POST", "/api/llm/reload", {}); toast("Rechargé (" + r.count + ")"); await loadModels(); }
+  catch (err) { toast(err.message, true); }
+};
+
+$("llm-save").onclick = async () => {
+  const payload = {
+    name: $("f-name").value, base_url: $("f-base").value.trim(), model: $("f-model").value || "auto",
+    timeout: Number($("f-timeout").value) || 60, priority: Number($("f-priority").value) || 100,
+    attempts: Number($("f-attempts").value) || 0, cooldown_seconds: Number($("f-cooldown").value) || 0,
+    max_tokens: $("f-maxtok").value === "" ? null : Number($("f-maxtok").value),
+    temperature: $("f-temp").value === "" ? null : Number($("f-temp").value),
+    enabled: $("f-enabled").value === "true",
+  };
+  if ($("f-key").value) payload.api_key = $("f-key").value;
+  try {
+    if (llmEditId) await api("POST", "/api/llm/endpoints/update", { id: llmEditId, ...payload });
+    else await api("POST", "/api/llm/endpoints", payload);
+    toast(llmEditId ? "Endpoint mis à jour" : "Endpoint ajouté");
+    $("llm-form-card").classList.add("hidden");
+    await loadModels();
+  } catch (err) { toast(err.message, true); }
+};
+
+/* ---------- agent settings ---------- */
+async function loadAgent() {
+  const data = await api("GET", "/api/agent");
+  const s = data.settings;
+  $("a-backend").innerHTML = (data.backends || []).map((b) =>
+    "<option value='" + b.name + "'" + (b.selected ? " selected" : "") +
+    (b.available ? "" : " disabled") + ">" + b.name +
+    (b.available ? "" : " — indisponible : " + (b.reason || "non installé")) + "</option>").join("");
+  $("a-prompt").value = s.system_prompt || "";
+  $("a-steps").value = s.max_steps;
+  $("a-out").value = s.max_output_chars;
+  $("a-temp").value = s.temperature;
+  $("a-dry").value = String(s.dry_run);
+  const active = new Set(s.tools || data.available_tools);
+  $("a-tools").innerHTML = data.available_tools.map((t) =>
+    "<span class='row'><input type='checkbox' style='width:auto' value='" + t + "'" +
+    (active.has(t) ? " checked" : "") + "><span class='badge'>" + t + "</span>" +
+    (data.dry_run_blocked.includes(t) ? "<span class='muted'>(bloqué en dry-run)</span>" : "") +
+    "</span>").join("");
+  $("a-note").textContent = s.tools ? s.tools.length + " outils sélectionnés" : "tous les outils autorisés";
+}
+
+$("a-save").onclick = async () => {
+  const tools = Array.from($("a-tools").querySelectorAll("input:checked")).map((c) => c.value);
+  try {
+    const res = await api("POST", "/api/agent", {
+      backend: $("a-backend").value || "smolagents",
+      system_prompt: $("a-prompt").value,
+      max_steps: Number($("a-steps").value),
+      max_output_chars: Number($("a-out").value),
+      temperature: Number($("a-temp").value),
+      dry_run: $("a-dry").value === "true",
+      tools: tools,
+    });
+    toast("Réglages agent enregistrés");
+    await loadAgent();
+    return res;
+  } catch (err) { toast(err.message, true); }
+};
+
+/* ---------- secrets ---------- */
+async function loadSocial() {
+  await loadSettings("social", "set-social");
+  const data = await api("GET", "/api/social");
+  $("social-adapters").innerHTML = table(
+    ["Plateforme", "État", "Détail", ""],
+    (data.adapters || []).map((a) => [
+      "<span class='mono'>" + esc(a.platform) + "</span>",
+      a.configured
+        ? '<span class="badge ok">configuré</span>'
+        : '<span class="badge warn">incomplet</span>',
+      esc(a.status),
+      "<button class='small sec' data-plat='" + esc(a.platform) + "'>Tester</button>",
+    ]));
+  $("social-adapters").querySelectorAll("button[data-plat]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        const res = await api("POST", "/api/social/test", { platform: btn.dataset.plat });
+        toast(res.ok ? "OK — " + res.detail : "Échec — " + res.error, !res.ok);
+      } catch (err) { toast(err.message, true); }
+    };
+  });
+  $("social-drafts").innerHTML = table(
+    ["#", "Plateforme", "Statut", "Planifié", "Publié", "Erreur"],
+    (data.drafts || []).map((d) => [
+      d.id, esc(d.platform),
+      d.status === "PUBLISHED" ? '<span class="badge ok">PUBLISHED</span>'
+        : d.status === "FAILED" ? '<span class="badge err">FAILED</span>'
+        : '<span class="badge">' + esc(d.status) + "</span>",
+      esc(d.scheduled_for || "—"), esc(d.published_at || "—"), esc(d.error || "—"),
+    ]));
+}
+
+async function loadSecrets() {
+  const data = await api("GET", "/api/secrets");
+  $("secret-list").innerHTML = table(
+    ["Nom", "État", ""],
+    (data.items || []).map((s) => [
+      "<span class='mono'>" + esc(s.key) + "</span>",
+      s.status === "absent" ? '<span class="badge">absent</span>'
+        : '<span class="badge ok">' + esc(s.status) + "</span>",
+      "<div class='row'><input type='password' placeholder='nouvelle valeur' data-key='" + esc(s.key) + "' class='sec-val'>" +
+      "<button class='small' data-act='set' data-key='" + esc(s.key) + "'>OK</button>" +
+      "<button class='small danger' data-act='del' data-key='" + esc(s.key) + "'>Suppr</button></div>",
+    ]));
+  $("secret-list").querySelectorAll("button").forEach((btn) => {
+    btn.onclick = async () => {
+      const key = btn.dataset.key;
+      try {
+        if (btn.dataset.act === "set") {
+          const val = $("secret-list").querySelector("input[data-key='" + key + "']").value;
+          if (!val) return toast("Valeur requise", true);
+          await api("POST", "/api/secrets/set", { key, value: val });
+          toast("Secret enregistré");
+        } else {
+          await api("POST", "/api/secrets/delete", { key });
+          toast("Secret supprimé");
+        }
+        await loadSecrets();
+      } catch (err) { toast(err.message, true); }
+    };
+  });
+}
+
+async function loadIntegrations() {
+  await loadSecrets();
+  const data = await api("GET", "/api/integrations");
+  $("int-tests").innerHTML = table(
+    ["Intégration", "État", "Détail", ""],
+    (data.items || []).map((it) => [
+      "<span class='mono'>" + esc(it.name) + "</span>",
+      it.configured
+        ? '<span class="badge ok">configuré</span>'
+        : '<span class="badge warn">incomplet</span>',
+      esc(it.status),
+      "<button class='small sec' data-int='" + esc(it.name) + "'>Tester</button>",
+    ]));
+  $("int-tests").querySelectorAll("button[data-int]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        const res = await api("POST", "/api/integrations/test", { kind: btn.dataset.int });
+        toast(res.ok ? "OK — " + res.detail : "Échec — " + res.error, !res.ok);
+        await loadIntegrations();
+      } catch (err) { toast(err.message, true); }
+    };
+  });
+}
+
+$("s-set").onclick = async () => {
+  const key = $("s-key").value.trim(), value = $("s-value").value;
+  if (!key || !value) return toast("Nom et valeur requis", true);
+  try {
+    await api("POST", "/api/secrets/set", { key, value });
+    $("s-key").value = $("s-value").value = "";
+    toast("Secret enregistré");
+    await loadSecrets();
+  } catch (err) { toast(err.message, true); }
+};
+
+/* ---------- security ---------- */
+async function loadSecurity() {
+  const sec = await api("GET", "/api/security");
+
+  $("sec-sessions").innerHTML = table(
+    ["#", "Créée", "Expire", ""],
+    (sec.sessions || []).map((s) => [
+      s.id, esc(s.created_at), esc(s.expires_at),
+      "<button class='small danger' data-sess='" + s.id + "'>Révoquer</button>",
+    ]));
+  $("sec-sessions").querySelectorAll("button[data-sess]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        const res = await api("POST", "/api/security/sessions/revoke", { id: Number(btn.dataset.sess) });
+        toast(res.ok ? "Session révoquée" : "Session introuvable", !res.ok);
+        await loadSecurity();
+      } catch (err) { toast(err.message, true); }
+    };
+  });
+
+  $("tool-list").innerHTML = (sec.tools || []).map((t) =>
+    "<span class='badge'>" + t + "</span>").join("") +
+    (sec.dry_run_blocked || []).map((t) =>
+      " <span class='muted'>" + t + " : bloqué en dry-run</span>").join("");
+
+  const secrets = await api("GET", "/api/secrets");
+  $("rot-key").innerHTML = (secrets.items || [])
+    .filter((s) => s.key !== "ADMIN_PASSWORD_HASH")
+    .map((s) => "<option value='" + esc(s.key) + "'>" + esc(s.key) + "</option>").join("");
+
+  const audit = await api("GET", "/api/audit?limit=25");
+  $("audit-list").innerHTML = table(
+    ["Quand", "Acteur", "Action", "Détail"],
+    (audit.items || []).map((a) => [esc(a.created_at), esc(a.actor), "<span class='mono'>" + esc(a.action) + "</span>", esc(a.detail || "")]));
+}
+$("audit-refresh").onclick = () => loadSecurity().catch((err) => toast(err.message, true));
+
+$("rot-btn").onclick = async () => {
+  const value = $("rot-value").value;
+  const key = $("rot-key").value;
+  if (!key) return toast("Aucun secret disponible", true);
+  if (!value) return toast("Nouvelle valeur requise", true);
+  try {
+    await api("POST", "/api/secrets/rotate", { key, value });
+    $("rot-value").value = "";
+    toast("Secret tourné (jamais affiché)");
+    await loadSecurity();
+  } catch (err) { toast(err.message, true); }
+};
+
+/* ---------- workflows / memory / logs ---------- */
+function workflowForm() {
+  const name = $("wf-name").value.trim();
+  let steps;
+  try { steps = JSON.parse($("wf-steps").value); }
+  catch (_) { throw new Error("Steps : JSON invalide"); }
+  return { name, steps };
+}
+
+async function loadWorkflows() {
+  const data = await api("GET", "/api/workflows");
+
+  $("wf-list").innerHTML = table(
+    ["Nom", "Étapes", ""],
+    (data.items || []).map((w) => [
+      "<span class='mono'>" + esc(w.name) + "</span>",
+      w.step_count + " · " + esc((w.steps || []).map((s) => s.kind + ":" + s.name).join(" → ")),
+      "<div class='row'><button class='small' data-act='run' data-name='" + esc(w.name) + "'>Exécuter</button>" +
+      "<button class='small sec' data-act='edit' data-name='" + esc(w.name) + "'>Charger</button></div>",
+    ]));
+  $("wf-list").querySelectorAll("button").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        if (btn.dataset.act === "run") {
+          const res = await api("POST", "/api/workflows/run", { name: btn.dataset.name });
+          toast("Run #" + res.run_id + " démarré");
+          await loadWorkflows();
+        } else {
+          const wf = (data.items || []).find((w) => w.name === btn.dataset.name);
+          if (!wf) return;
+          $("wf-name").value = wf.name;
+          $("wf-steps").value = JSON.stringify(wf.steps, null, 2);
+          $("wf-form-title").textContent = "Éditer " + wf.name;
+          $("wf-dry-out").textContent = "";
+        }
+      } catch (err) { toast(err.message, true); }
+    };
+  });
+
+  $("wf-runs").innerHTML = table(
+    ["#", "Workflow", "Statut", "Étape", "Créé", ""],
+    (data.runs || []).map((r) => [
+      r.id, esc(r.workflow_name),
+      r.status === "SUCCESS" ? '<span class="badge ok">SUCCESS</span>'
+        : r.status === "FAILED" ? '<span class="badge err">FAILED</span>'
+        : '<span class="badge">' + esc(r.status) + "</span>",
+      r.current_step, esc(r.created_at),
+      ["PENDING", "RUNNING", "WAITING_CONFIRMATION"].includes(r.status)
+        ? "<button class='small danger' data-run='" + r.id + "'>Annuler</button>" : "",
+    ]));
+  $("wf-runs").querySelectorAll("button[data-run]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        const res = await api("POST", "/api/workflows/cancel", { run_id: Number(btn.dataset.run) });
+        toast(res.ok ? "Run annulé" : res.reason, !res.ok);
+        await loadWorkflows();
+      } catch (err) { toast(err.message, true); }
+    };
+  });
+
+  $("wf-jobs").innerHTML = table(
+    ["Job", "Workflow", "Quand", "État", ""],
+    (data.jobs || []).map((j) => [
+      "<span class='mono'>" + esc(j.name) + "</span>", esc(j.workflow_name),
+      String(j.hour ?? "?").padStart(2, "0") + ":" + String(j.minute ?? "?").padStart(2, "0"),
+      j.enabled ? '<span class="badge ok">actif</span>' : '<span class="badge">inactif</span>',
+      "<button class='small danger' data-job='" + esc(j.name) + "'>Suppr</button>",
+    ]));
+  $("wf-jobs").querySelectorAll("button[data-job]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        await api("POST", "/api/workflows/schedule/delete", { name: btn.dataset.job });
+        toast("Job supprimé");
+        await loadWorkflows();
+      } catch (err) { toast(err.message, true); }
+    };
+  });
+}
+
+$("wf-dry").onclick = async () => {
+  try {
+    const res = await api("POST", "/api/workflows/dry_run", workflowForm());
+    $("wf-dry-out").textContent =
+      "OK : " + res.name + " (" + res.step_count + " étapes — rien enregistré)";
+  } catch (err) { $("wf-dry-out").textContent = ""; toast(err.message, true); }
+};
+
+$("wf-save").onclick = async () => {
+  try {
+    const res = await api("POST", "/api/workflows", workflowForm());
+    toast("Workflow '" + res.name + "' enregistré (#" + res.id + ")");
+    await loadWorkflows();
+  } catch (err) { toast(err.message, true); }
+};
+
+$("job-save").onclick = async () => {
+  try {
+    await api("POST", "/api/workflows/schedule", {
+      name: $("job-name").value.trim(),
+      workflow_name: $("job-wf").value.trim(),
+      hour: Number($("job-hour").value),
+      minute: Number($("job-min").value),
+      enabled: true,
+    });
+    toast("Job planifié");
+    await loadWorkflows();
+  } catch (err) { toast(err.message, true); }
+};
+
+$("job-del").onclick = async () => {
+  try {
+    const res = await api("POST", "/api/workflows/schedule/delete", { name: $("job-name").value.trim() });
+    toast(res.ok ? "Job supprimé" : "Job introuvable", !res.ok);
+    await loadWorkflows();
+  } catch (err) { toast(err.message, true); }
+};
+
+async function loadMemory() {
+  const data = await api("GET", "/api/memory?limit=25");
+  $("mem-list").innerHTML = table(
+    ["Quand", "Fait"],
+    (data.items || []).map((f) => [esc(f.created_at), esc(f.text || f.content || JSON.stringify(f.value ?? ""))]));
+}
+async function loadLogs() {
+  const data = await api("GET", "/api/incidents?limit=25");
+  $("log-list").innerHTML = table(
+    ["Quand", "Type", "Message"],
+    (data.items || []).map((i) => [esc(i.created_at), esc(i.kind || i.type || ""), esc(i.message || i.detail || "")]));
+}
+
+boot();
+</script>
+</body>
+</html>

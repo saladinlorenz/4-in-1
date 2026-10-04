@@ -1,4 +1,10 @@
-from .adapters import SocialAdapter, TelegramAdapter
+from .adapters import BlueskyAdapter, DevtoAdapter, SocialAdapter, TelegramAdapter
 from .service import SocialService
 
-__all__ = ["SocialAdapter", "SocialService", "TelegramAdapter"]
+__all__ = [
+    "BlueskyAdapter",
+    "DevtoAdapter",
+    "SocialAdapter",
+    "SocialService",
+    "TelegramAdapter",
+]

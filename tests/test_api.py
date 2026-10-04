@@ -5,9 +5,13 @@ import time
 import httpx
 
 from agent import AgentRunner
+from config.secrets import SecretStore
 from dashboard import HealthServer, LocalApi
+from services import AdminAuth
 
 from .conftest import FakeRouter, final_answer_payload
+
+PASSWORD = "supersecret42"
 
 
 def make_runner(settings, storage, notifier, responses=None) -> AgentRunner:
@@ -23,14 +27,29 @@ def make_runner(settings, storage, notifier, responses=None) -> AgentRunner:
 
 def make_server(settings, storage, notifier, responses=None):
     runner = make_runner(settings, storage, notifier, responses)
+    auth = AdminAuth(storage, SecretStore(settings.storage_dir / ".env.runtime"))
     server = HealthServer(
         "127.0.0.1",
         0,
         lambda: {"status": "ok", "version": "0.1.0", "uptime_seconds": 1.0},
         api=LocalApi(runner, storage),
+        auth=auth,
     )
     server.start()
     return server, runner
+
+
+def auth_session(base: str) -> dict[str, str]:
+    setup = httpx.post(base + "/api/setup", json={"password": PASSWORD}, timeout=5)
+    assert setup.status_code == 200, setup.text
+    login = httpx.post(base + "/api/login", json={"password": PASSWORD}, timeout=5)
+    assert login.status_code == 200, login.text
+    token = login.cookies.get("agentos_session")
+    assert token
+    return {
+        "Cookie": f"agentos_session={token}",
+        "X-CSRF-Token": login.json()["csrf_token"],
+    }
 
 
 def wait_status(storage, task_id: int, *statuses: str, timeout: float = 10.0) -> bool:
@@ -96,16 +115,26 @@ def test_post_cancel_task(settings, storage, notifier):
     server, runner = make_server(settings, storage, notifier)
     try:
         base = f"http://127.0.0.1:{server.port}"
+        headers = auth_session(base)
 
-        done = httpx.post(base + f"/api/tasks/{task_id}/cancel", timeout=5)
+        denied = httpx.post(base + f"/api/tasks/{task_id}/cancel", timeout=5)
+        assert denied.status_code == 401
+
+        done = httpx.post(
+            base + f"/api/tasks/{task_id}/cancel", headers=headers, timeout=5
+        )
         assert done.status_code == 200
         assert done.json() == {"ok": True, "reason": "cancelled_before_start"}
         assert storage.get_task(task_id)["status"] == "CANCELLED"
 
-        again = httpx.post(base + f"/api/tasks/{task_id}/cancel", timeout=5)
+        again = httpx.post(
+            base + f"/api/tasks/{task_id}/cancel", headers=headers, timeout=5
+        )
         assert again.json()["ok"] is False
 
-        unknown = httpx.post(base + "/api/tasks/9999/cancel", timeout=5)
+        unknown = httpx.post(
+            base + "/api/tasks/9999/cancel", headers=headers, timeout=5
+        )
         assert unknown.json() == {"ok": False, "reason": "unknown_task"}
     finally:
         server.stop()
@@ -119,21 +148,32 @@ def test_post_confirmation_decision(settings, storage, notifier):
     server, runner = make_server(settings, storage, notifier, responses)
     try:
         base = f"http://127.0.0.1:{server.port}"
+        headers = auth_session(base)
         draft_id = storage.create_draft("telegram", "content")
         confirmation_id = runner.request_confirmation(
             task_id, "publish_draft", f"draft#{draft_id}"
         )
 
-        approve = httpx.post(base + f"/api/confirmations/{confirmation_id}/approve", timeout=5)
+        approve = httpx.post(
+            base + f"/api/confirmations/{confirmation_id}/approve",
+            headers=headers,
+            timeout=5,
+        )
         assert approve.json() == {"ok": True, "reason": "approved"}
         assert storage.get_confirmation(confirmation_id)["status"] == "APPROVED"
         assert wait_status(storage, task_id, "SUCCESS")
         assert storage.get_task(task_id)["status"] != "CANCELLED"
 
-        again = httpx.post(base + f"/api/confirmations/{confirmation_id}/reject", timeout=5)
+        again = httpx.post(
+            base + f"/api/confirmations/{confirmation_id}/reject",
+            headers=headers,
+            timeout=5,
+        )
         assert again.json()["ok"] is False
 
-        unknown = httpx.post(base + "/api/confirmations/4242/approve", timeout=5)
+        unknown = httpx.post(
+            base + "/api/confirmations/4242/approve", headers=headers, timeout=5
+        )
         assert unknown.json()["ok"] is False
     finally:
         server.stop()
@@ -146,9 +186,14 @@ def test_post_reject_cancels_task(settings, storage, notifier):
     server, runner = make_server(settings, storage, notifier)
     try:
         base = f"http://127.0.0.1:{server.port}"
+        headers = auth_session(base)
         confirmation_id = runner.request_confirmation(task_id, "publish_draft", "draft#1")
 
-        reject = httpx.post(base + f"/api/confirmations/{confirmation_id}/reject", timeout=5)
+        reject = httpx.post(
+            base + f"/api/confirmations/{confirmation_id}/reject",
+            headers=headers,
+            timeout=5,
+        )
         assert reject.json() == {"ok": True, "reason": "rejected"}
         assert storage.get_task(task_id)["status"] == "CANCELLED"
     finally:
@@ -160,12 +205,30 @@ def test_post_bad_ids_methods_and_unknown_paths(settings, storage, notifier):
     server, runner = make_server(settings, storage, notifier)
     try:
         base = f"http://127.0.0.1:{server.port}"
-        assert httpx.post(base + "/api/tasks/abc/cancel", timeout=5).status_code == 400
-        assert httpx.post(base + "/api/confirmations/0/approve", timeout=5).status_code == 400
-        assert httpx.post(base + "/health", timeout=5).status_code == 405
-        assert httpx.post(base + "/api/unknown", timeout=5).status_code == 404
+        headers = auth_session(base)
+        assert (
+            httpx.post(base + "/api/tasks/abc/cancel", headers=headers, timeout=5).status_code
+            == 400
+        )
+        assert (
+            httpx.post(
+                base + "/api/confirmations/0/approve", headers=headers, timeout=5
+            ).status_code
+            == 400
+        )
+        assert httpx.post(base + "/health", headers=headers, timeout=5).status_code == 405
+        assert httpx.post(base + "/api/unknown", headers=headers, timeout=5).status_code == 404
         assert httpx.get(base + "/api/nope", timeout=5).status_code == 404
-        assert httpx.post(base + "/api/tasks/1/nothing", timeout=5).status_code == 404
+        assert (
+            httpx.post(base + "/api/tasks/1/nothing", headers=headers, timeout=5).status_code
+            == 404
+        )
+        # a session without the CSRF header is refused
+        cookie = {"Cookie": headers["Cookie"]}
+        assert (
+            httpx.post(base + "/api/tasks/1/cancel", headers=cookie, timeout=5).status_code
+            == 403
+        )
     finally:
         server.stop()
         runner.shutdown()
