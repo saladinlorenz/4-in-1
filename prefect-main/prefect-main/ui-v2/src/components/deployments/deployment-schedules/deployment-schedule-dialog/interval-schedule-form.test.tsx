@@ -1,0 +1,268 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { createWrapper, server } from "@tests/utils";
+import { mockPointerEvents } from "@tests/utils/browser";
+import { buildApiUrl } from "@tests/utils/handlers";
+import { format, set } from "date-fns";
+import { HttpResponse, http } from "msw";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { Dialog } from "@/components/ui/dialog";
+import {
+	IntervalScheduleForm,
+	type IntervalScheduleFormProps,
+} from "./interval-schedule-form";
+
+const IntervalScheduleFormTest = (props: IntervalScheduleFormProps) => (
+	<>
+		<Dialog>
+			<IntervalScheduleForm {...props} />
+		</Dialog>
+	</>
+);
+
+/**
+ * Captures the body of the request that saves a schedule. `fireEvent` is
+ * necessary because `userEvent` does not submit the form in jsdom.
+ */
+const captureSaveRequest = () => {
+	const request = { body: undefined as unknown };
+	const handler = async ({ request: req }: { request: Request }) => {
+		request.body = await req.json();
+		return HttpResponse.json([]);
+	};
+	server.use(
+		http.post(buildApiUrl("/deployments/:id/schedules"), handler),
+		http.patch(buildApiUrl("/deployments/:id/schedules/:schedule_id"), handler),
+	);
+	return request;
+};
+
+/**
+ * The anchor date defaults to now, so the time input is pre-filled with the
+ * current HH:mm. React swallows a change event whose value equals the
+ * input's current value, so pick an hour that can never be the current one.
+ */
+const pickTimeOfDay = () => {
+	const hours = new Date().getHours() === 14 ? 15 : 14;
+	return {
+		input: `${hours}:35`,
+		display: `${String(hours - 12).padStart(2, "0")}:35 PM`,
+		isoTime: `T${hours}:35:00.000Z`,
+	};
+};
+
+const baseSchedule = {
+	active: true,
+	created: "0",
+	deployment_id: "0",
+	id: "123",
+	updated: "0",
+};
+
+describe("IntervalScheduleForm", () => {
+	beforeAll(mockPointerEvents);
+
+	it("is able to create a new interval schedule", async () => {
+		// Setup
+		const user = userEvent.setup();
+		render(<IntervalScheduleFormTest deployment_id="0" onSubmit={vi.fn()} />, {
+			wrapper: createWrapper(),
+		});
+
+		// Test
+		await user.click(screen.getByLabelText(/active/i));
+		await user.clear(screen.getByLabelText(/value/i));
+		await user.type(screen.getByLabelText(/value/i), "100");
+
+		await user.click(screen.getByLabelText(/interval/i));
+		await user.click(screen.getByRole("option", { name: /hours/i }));
+
+		await user.click(screen.getByLabelText(/select timezone/i));
+		await user.click(screen.getByRole("option", { name: /africa \/ asmera/i }));
+		await user.click(screen.getByRole("button", { name: /save/i }));
+
+		// ------------ Assert
+
+		expect(screen.getByLabelText(/active/i)).not.toBeChecked();
+		expect(screen.getByLabelText(/value/i)).toHaveValue("100");
+	});
+
+	it("roundtrips an edited interval schedule without changing its interval", async () => {
+		const request = captureSaveRequest();
+		const MOCK_SCHEDULE = {
+			...baseSchedule,
+			schedule: {
+				interval: 7_200,
+				anchor_date: "2024-01-01T12:00:00.000Z",
+				timezone: "UTC",
+			},
+		};
+		render(
+			<IntervalScheduleFormTest
+				deployment_id="0"
+				onSubmit={vi.fn()}
+				scheduleToEdit={MOCK_SCHEDULE}
+			/>,
+			{ wrapper: createWrapper() },
+		);
+
+		await waitFor(() =>
+			expect(screen.getByLabelText(/value/i)).toHaveValue("2"),
+		);
+		expect(screen.getByLabelText(/interval/i)).toHaveTextContent("Hours");
+
+		fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+		await waitFor(() => expect(request.body).toBeDefined());
+		const { schedule } = request.body as { schedule: { interval: number } };
+		expect(schedule.interval).toBe(MOCK_SCHEDULE.schedule.interval);
+	});
+
+	it("is able to edit an interval schedule", () => {
+		// Setup
+		const MOCK_SCHEDULE = {
+			...baseSchedule,
+			schedule: {
+				interval: 3600,
+				anchor_date: new Date().toISOString(),
+				timezone: "Etc/UTC",
+			},
+		};
+
+		render(
+			<IntervalScheduleFormTest
+				deployment_id="0"
+				onSubmit={vi.fn()}
+				scheduleToEdit={MOCK_SCHEDULE}
+			/>,
+			{ wrapper: createWrapper() },
+		);
+
+		// ------------ Assert
+
+		expect(screen.getByLabelText(/active/i)).toBeChecked();
+		expect(screen.getByLabelText(/value/i)).toHaveValue("1");
+		expect(screen.getByLabelText(/select timezone/i)).toHaveTextContent("UTC");
+	});
+
+	it("defaults to UTC for new schedules", () => {
+		render(<IntervalScheduleFormTest deployment_id="0" onSubmit={vi.fn()} />, {
+			wrapper: createWrapper(),
+		});
+
+		expect(screen.getByLabelText(/select timezone/i)).toHaveTextContent("UTC");
+	});
+
+	it("is able to select a time of day for the anchor date", async () => {
+		const user = userEvent.setup();
+		const request = captureSaveRequest();
+		const time = pickTimeOfDay();
+		render(<IntervalScheduleFormTest deployment_id="0" onSubmit={vi.fn()} />, {
+			wrapper: createWrapper(),
+		});
+
+		await user.click(screen.getByLabelText(/anchor date/i));
+		fireEvent.change(screen.getByLabelText("Time"), {
+			target: { value: time.input },
+		});
+
+		expect(screen.getByLabelText("Time")).toHaveValue(time.input);
+		expect(screen.getByLabelText(/anchor date/i)).toHaveTextContent(
+			time.display,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+		await waitFor(() => expect(request.body).toBeDefined());
+		const [{ schedule }] = request.body as [
+			{ schedule: { anchor_date: string } },
+		];
+		expect(schedule.anchor_date).toContain(time.isoTime);
+	});
+
+	it("keeps the selected time when picking another day", async () => {
+		const user = userEvent.setup();
+		const time = pickTimeOfDay();
+		render(<IntervalScheduleFormTest deployment_id="0" onSubmit={vi.fn()} />, {
+			wrapper: createWrapper(),
+		});
+
+		// react-day-picker prefixes today's button label with "Today, ", so
+		// pick a day in the current month that can never be today.
+		const today = new Date();
+		const otherDay = set(today, { date: today.getDate() === 15 ? 14 : 15 });
+
+		await user.click(screen.getByLabelText(/anchor date/i));
+		fireEvent.change(screen.getByLabelText("Time"), {
+			target: { value: time.input },
+		});
+		await user.click(
+			screen.getByRole("button", {
+				name: format(otherDay, "EEEE, MMMM do, yyyy"),
+			}),
+		);
+
+		expect(screen.getByLabelText(/anchor date/i)).toHaveTextContent(
+			`${format(otherDay, "MMM do, yyyy")} at ${time.display}`,
+		);
+	});
+
+	it("shows and saves the anchor date in the schedule's timezone", async () => {
+		const user = userEvent.setup();
+		const request = captureSaveRequest();
+		const MOCK_SCHEDULE = {
+			...baseSchedule,
+			schedule: {
+				interval: 3600,
+				anchor_date: "2024-01-01T12:00:00.000Z",
+				timezone: "America/New_York",
+			},
+		};
+
+		render(
+			<IntervalScheduleFormTest
+				deployment_id="0"
+				onSubmit={vi.fn()}
+				scheduleToEdit={MOCK_SCHEDULE}
+			/>,
+			{ wrapper: createWrapper() },
+		);
+
+		expect(screen.getByLabelText(/anchor date/i)).toHaveTextContent(
+			"Jan 1st, 2024 at 07:00 AM",
+		);
+
+		// nb: The interval select resets on edit, so it has to be set again
+		await user.click(screen.getByLabelText(/interval/i));
+		await user.click(screen.getByRole("option", { name: /hours/i }));
+		fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+		await waitFor(() => expect(request.body).toBeDefined());
+		const { schedule } = request.body as {
+			schedule: { anchor_date: string };
+		};
+		expect(schedule.anchor_date).toBe("2024-01-01T12:00:00.000Z");
+	});
+
+	it("displays UTC when editing a schedule stored as UTC", () => {
+		const MOCK_SCHEDULE = {
+			...baseSchedule,
+			schedule: {
+				interval: 3600,
+				anchor_date: new Date().toISOString(),
+				timezone: "UTC",
+			},
+		};
+
+		render(
+			<IntervalScheduleFormTest
+				deployment_id="0"
+				onSubmit={vi.fn()}
+				scheduleToEdit={MOCK_SCHEDULE}
+			/>,
+			{ wrapper: createWrapper() },
+		);
+
+		expect(screen.getByLabelText(/select timezone/i)).toHaveTextContent("UTC");
+	});
+});

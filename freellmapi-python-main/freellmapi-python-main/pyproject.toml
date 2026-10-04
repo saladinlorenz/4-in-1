@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "freellmapi"
+version = "1.0.0"
+description = "FreeLLMAPI - Python port"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "httpx>=0.27",
+    "cryptography>=42.0",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "httpx"]
+tray = ["pystray>=0.19", "Pillow>=10.0"]
+build = ["pyinstaller>=6.0", "Pillow>=10.0"]
+
+[project.scripts]
+freellm = "freellm.__main__:main"
+freellm-tray = "freellm.tray:run_tray"
+
+[tool.setuptools.packages.find]
+include = ["freellm*"]
+
+[tool.setuptools.package-data]
+freellm = ["static/*", "static/**/*"]

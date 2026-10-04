@@ -1,0 +1,149 @@
+All research targets are now complete — every file needed for the specification has been read end-to-end. Here is the full technical specification.
+
+---
+
+# FreeLLM API Gateway — Technical Specification
+
+Source: `E:\freellmapi-main\freellmapi-main\server\src` (Express 4 + TypeScript ESM, better-sqlite3, zod validation). Everything below was verified by direct file reads.
+
+## 1. App assembly & endpoint inventory (`app.ts`, 362 lines)
+
+Middleware order in `createApp()`:
+
+1. **helmet** — CSP `default-src 'self'`; `script-src 'self' '<INLINE_BOOTSTRAP_SHA>'` (literal SHA of inline theme bootstrap); `style-src 'unsafe-inline'`; `img-src 'self' data:`; HSTS off; `crossOriginOpenerPolicy:false`; `originAgentCluster:false`.
+2. **Per-request header fixup** — re-appends `upgrade-insecure-requests` to CSP only when HTTPS (or env `CSP_UPGRADE_INSECURE_REQUESTS=true`) because plain-HTTP LAN installs broke (#682/#734); adds `Cross-Origin-Opener-Policy: same-origin` + `Origin-Agent-Cluster: ?1` only for "trustworthy" origins (HTTPS, or hostname matching `/^(?:localhost|[^.]+(\.[^.]+)*\.localhost|127(\.\d{1,3}){3}|\[?::1\]?)$/i`).
+3. **cors** — origin callback allows no-origin calls and origins in `{localhost:5173, 127.0.0.1:5173, [::1]:5173, ...config.dashboardOrigins}`.
+4. **Two-tier JSON body limits**: paths `['/v1','/v1beta','/mcp','/api/chat','/api/generate','/api/embed','/api/embeddings']` get `express.json({limit: cfg.requestBodyLimitBytes})` (`REQUEST_BODY_LIMIT_MB`, default **25 MB**, vision payloads); all other routes get a second parser at **10 MB**.
+5. **clientContextMiddleware** (`lib/client-context.js`) — stores caller IP + User-Agent in AsyncLocalStorage for analytics.
+6. **Ollama emulation first**: per-IP `createProxyRateLimiter` on `['/api/tags','/api/version','/api/show','/api/chat','/api/generate','/api/embed','/api/embeddings']`, then `ollamaRouter` — mounted *before* the dashboard auth gate (real Ollama clients don't speak session auth).
+7. **Dashboard auth**: `/api/auth` router unguarded (status/setup/login bootstrap). Broad `createAdminRateLimiter()` on `/api`; an extra tight bucket (`EXPORT_RATE_LIMIT_RPM = 10` rpm) on `/api/keys/export`.
+8. **Admin routers, each behind `requireAuth`**: `/api/keys`, `/api/client-profiles`, `/api/conversations`, `/api/logs`, `/api/models`, `/api/profiles`, `/api/fallback`, `/api/embeddings`, `/api/media`, `/api/analytics`, `/api/health`, `/api/free-tier`, `/api/settings`, `/api/premium`, `/api/backups`, `/api/cache`, `/api/compression`, `/api/update`. Plus unauthenticated `GET /api/ping` ? `{status:'ok', timestamp:<ISO>}`.
+9. **Inference surfaces**:
+   - `/v1` ? `docsRouter` (`GET /v1/docs`, `GET /v1/openapi.json`, before rate limiter), `providersRouter` (`GET /v1/providers`, unified-key auth inside handler, before rate limiter), `/v1/t/:token` ? rate limiter + `urlTokenRouter`, `createProxyRateLimiter(cfg.proxyRateLimitRpm)` (**PROXY_RATE_LIMIT_RPM**, 120 default, 0 disables), then in order: `anthropicRouter` (before proxyRouter so it can content-negotiate `GET /v1/models` on the `anthropic-version` header, falling through otherwise) ? `proxyRouter` ? `responsesRouter`.
+   - `/v1beta` ? rate limiter + `geminiRouter`.
+   - `/mcp` ? rate limiter + `mcpRouter` (same limiter as /v1 — shared credential must not get a throttle-free brute-force oracle).
+   - `statusRouter` at root (`GET /livez`, `GET /readyz`, unauthenticated).
+10. **errorHandler** — maps body-parser 413 to a message naming `REQUEST_BODY_LIMIT_MB`; applies error shape only to inference prefixes `['/v1','/v1beta','/mcp']`.
+11. **Static/SPA** (if `cfg.serveStaticAssets`): `compression()` mounted *after* all API routers so SSE streams are never buffered; `express.static(clientDist)` with `public, max-age=31536000, immutable` for content-hashed assets under `assets/` (regex `/-[A-Za-z0-9_-]{6,}\.[A-Za-z0-9]+$/`), `no-cache` otherwise; SPA fallback serves index.html for any path not starting `/api/`, `/v1/`, `/v1beta/`.
+
+## 2. Shared infrastructure
+
+### Auth (`middleware/requireAuth.ts`, `routes/proxy.ts`)
+- Dashboard: Bearer token (regex `^Bearer\s+/i`) or `x-dashboard-token`; failure ? 401 `{error:{message:'Authentication required', type:'authentication_error'}}`.
+- Inference (`extractApiToken`): accepts OpenAI `Authorization: Bearer`, Anthropic `x-api-key`, Gemini `x-goog-api-key`. Unified key grants full access; client-profile keys (`sk-cp-…`, SHA-256-digest stored, HMAC-SHA256 timing-safe comparison via digest equality) authenticate only `/v1` inference and trigger system-prompt injection (`prependSystemPrompt`). `resolveAuth()` returns the effective auth record incl. injected prompt.
+- URL tokens (`/v1/t/:token`): separately revocable bearer-equivalents for clients that cannot set headers.
+
+### Headers (`lib/header-value.ts`)
+`safeHeaderValue(v)`: bytes 0x21–0x7E plus SP pass through; `%`?`%25`; anything else percent-encoded UTF-8; lone surrogate ? `%EF%BF%BD`; cap 256 chars. `routedViaValue(platform, modelId)` builds the `X-Routed-Via` value. Motivation (#619): non-ASCII relay ids crashed the failover loop mid-stream.
+
+### Fallback loop (`lib/fallback-loop.ts`)
+Shared retry/failover engine used by proxy `/chat/completions` + legacy `/completions`, `responses.ts`, `anthropic.ts`, and `inbound-chat.ts`. Contract: `runFallbackLoop({maxRetries=MAX_RETRIES, state=newFallbackState(), attemptLog, clientGone(), abortInFlight(), route(), dispatch(route,attempt,ctx), logFailure?, onFatal?, onRoutingExhausted?, onExhausted?})`. Dispatch returns `'done'` (terminal success), `'committed'` (bytes already sent; stop failing over), or throws (retryable ? cooldown/skip bookkeeping into `state.skipKeys/skipModels/skipPlatforms`). Error hints: `{skipBench:true}` (healthy model, truncated turn — no cooldown), `{skipModelForRequest:true}` (rule out whole model this request), `isClientAbortError(err)` stops silently. Time budget via `getFallbackTimeBudgetMs()` + hedge abort controller (`newHedgeAbortError()`, `ctx.disarmHedge()` once committed). Exhaustion rendering: `setExhaustionHeaders(res, exhaustion)` + `res.status(exhaustion.status).json({error: exhaustionErrorPayload(exhaustion)})`; `setFallbackHeaders(res, attemptCount, attemptLog)` always applied. Per-attempt traces persist asynchronously to `request_attempts` after the loop (AsyncLocalStorage batch). Fire-and-forget key revalidation on upstream 401. Circuit-breaker guardrail default OFF.
+
+### Model maps
+- `services/anthropic-map.ts`: setting key `anthropic_model_map`, families `['default','opus','sonnet','haiku']`, values default `'auto'` (zod strict schema). A concrete catalog id requested through `/v1/messages` bypasses the map.
+- `services/gemini-map.ts`: setting `gemini_model_map`, families `['default','pro','flash','flashLite']`, default `'auto'`; `classifyGeminiFamily` lowercases and strips `models/`.
+
+### Tool-call rescue (`lib/tool-call-rescue.ts`)
+Four dialects, strictly schema-gated to requested tool names: Kimi/DeepSeek `<|tool_calls_section_begin|><|tool_call_begin|>functions.NAME:0<|tool_call_argument_begin|>{json}<|tool_call_end|>`; Llama/Groq `<function=NAME{json}</function>` or `<function=NAME>{json}</function>`; Qwen/Hermes XML `<tool_call>{json}</tool_call>`; bare/fenced single JSON object. API: `startsWithDialectMarker(probe)`, `couldBecomeDialectMarker(probe)` (strict-prefix test powering the 256-char hold window), `containsDialectMarker(text)`, `rescueInlineToolCalls(text, nameSet) ? {detected, calls:[{name,arguments}]|null, cleanText}`. Detected-but-unparseable ? dead turn (failover).
+
+### Tool args & guardrails
+`repairToolArguments(args, schema)` heals double-encoded JSON against the schema (GLM-style string-typed arrays); `toolSchemaMap(tools)`; `invalidToolCallReasons(calls, schemas)` + `invalidToolArgumentsError(displayName, invalid)` behind opt-in flag `isToolArgumentValidationEnabled()`. Token budget: `applyTokenBudget(inputTokens, maxTokens)` against setting `request_max_tokens_budget` (off default) ? rejection rendered as 413 with `tokenBudgetMessage`; `routingReserveTokens(maxTokens)` caps the output reserve for routing checks (#470/#956).
+
+## 3. OpenAI surface — `POST /v1/chat/completions` (+ legacy `/v1/completions`, `/v1/models`, `/v1/embeddings`, images) (`routes/proxy.ts`, 2599 lines)
+
+**Request validation**: `chatCompletionSchema` — messages union (system|developer|user|assistant|tool|function, min 1), `model?`, `temperature` 0–2, `top_p` 0–1, `stop`, `stream`, `stream_options.include_usage`, tools/tool_choice/parallel_tool_calls nullable-optional (nulls never forwarded), fusion config (virtual `"fusion"` model), spread of `samplingParamSchemaFields` (incl. `response_format`, `reasoning_effort`, penalties, seed, n, logprobs). Knob normalization (#200): `max_tokens<=0`?unset; `tool_choice:'any'`?`'required'`; tool defs re-default `type:'function'`; `max_completion_tokens` honored when `max_tokens` absent. Zod failures ? 400 with =5 path-qualified issues + console breadcrumb `[proxy] 400 invalid /chat/completions request:`. Always sets `X-Request-ID` (=requestGroupId).
+
+**Pipeline order**: fusion branch short-circuit (`FusionError`?its status/429-type; other errors?502 `fusion error: …`; success sets `X-Routed-Via`) ? response cache (opt-in via `RESPONSE_CACHE` env or setting; exact-match LRU keyed over normalized messages+all knobs+compression key; non-streaming only, cacheable temperatures only, per-request `X-FreeLLM-Cache` header forces/bypasses; hit sets `X-Routed-Via: cache`, `X-FreeLLM-Cache: HIT`, consumes zero quota) ? session id from `x-session-id` ? auto-routing chain (`resolveRoutingChain`) when model is auto ? context handoff setup (auto-routed only; `getSessionKey(messages, sessionIdHeader, strategyKey)`, `recordIncomingMessages`, `handoffPossible = hasPriorModel(sessionKey)`; #797 reasoning-memory session key computed independently) ? pin resolution:
+- auto ? sticky preference within chain;
+- pinned id with unify ON ? `resolveRequestedIdForDispatch` gives group members ? strict `groupChain` (failover never leaves the group, #335); empty chain ? 503 `{code:'no_providers_configured', type:'service_unavailable'}` when some row enabled, else 404 `{code:'model_not_found'}` "is disabled"; sticky member preferred only if inside group;
+- pinned id otherwise ? single-row catalog lookup; missing/disabled ? 404 `model_not_found`.
+
+Then: `pinnedModelId` for analytics ? `newFallbackState`/attemptLog ? disconnect fan-out (`res.on('close')` when `!writableEnded` ? `clientGone=true`, `clientAbort.abort(newClientAbortError())`; plus `hedgeAbort` for budget expiry) ? `runFallbackLoop` with `route(): routeRequest(estimatedTotal(+HANDOFF_MAX_TOKENS if handoffPossible), skipKeys, preferredModel, hasImage, wantsTools, skipModels, groupChain??chain, responseFormat!==undefined, skipPlatforms, outputReserve)`.
+
+**Streaming dispatch (turn-integrity framing, #231 audit)**:
+- Headers held until first real payload. `flushHeaders()` writes `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Routed-Via: routedViaValue(...)`, fallback headers, disarms the hedge, then flushes held preamble chunks.
+- Chunk factory: `{id: lastMeta.id ?? 'chatcmpl-'+Date.now(), object:'chat.completion.chunk', created: lastMeta.created ?? now-s, model: lastMeta.model ?? route.modelId, choices:[{index:0, delta, finish_reason}]}`.
+- Upstream model captured from first frame carrying one (`upstreamModel`, evidence for #534 `observeServedModel`), then **every frame's `model` overwritten to `route.modelId`** (Reka returns "default").
+- In-band error frames (`chunk.error && !chunk.choices`, observed Groq): before headers ? throw (invisible failover); after headers ? emit `{error:{message:'Provider error (<displayName>): <sanitized>', type:'stream_error'}}` + `data: [DONE]` + end, return `'committed'`.
+- Usage captured wherever it lands (own frame or bundled onto last choice-bearing frame) and reduced to a usage-only frame `{choices:[], usage}` re-emitted once after the finish chunk (OpenAI ordering preserved, no duplication).
+- Reasoning deltas via `streamReasoningText` accumulate into `streamReasoning` (#797 session memory); TTFB = first token of ANY kind (#764).
+- Tool-call deltas buffered into `Map<index,{id,name,args}>`, never forwarded raw.
+- Empty-text chunks held as preamble (role/reasoning kept; `tool_calls` and `finish_reason` stripped; `usage` stripped).
+- Dialect hold-window state machine on text chunks: mode `undecided` ? `dialect` (buffer all) when `wantsTools && startsWithDialectMarker(trimStart(held))`; ? `passthrough` (flush headers, emit held text as one content chunk) when `!wantsTools || !couldBecomeDialectMarker || probe.length>256`.
+- Stream end: assemble calls sorted by index (synthetic ids `call_stream_N`), `repairToolArguments` vs schemas, drop empty-name/invalid-JSON calls; dialect rescue converts held text (ids `call_rescued_N`, remainder becomes cleanText) or throws ``unparseable inline tool-call dialect from <displayName>: <first 120 chars>``; opt-in schema verdict only while `!headerSent` (commit-point licence); client-disconnect-before-commit returns `'committed'` without benching; empty completion (no flushed text/held text and no calls) ? throw with `skipBench` when upstream finish was `length`; bare "safe"/"unsafe" classification relay output (#809) fails over identically.
+- Final emission order: held-text content chunk (if any) ? ONE complete `tool_calls` chunk (`choices[0].delta.tool_calls=[{index,…}]`) ? terminal chunk with `finish_reason` (`'tool_calls'` wins; upstream `length`/`content_filter` survive; missing reason synthesized as `'stop'`) ? usage frame ? `data: [DONE]\n\n` ? end.
+- Success accounting: input = `usage.prompt_tokens ?? estimatedInputTokens+injectedHandoffTokens`; output = `usage.completion_tokens ?? chars/4 estimate` (text+reasoning+tool args); `recordUpstreamSuccess`, `setStickyModel(messages, route.modelDbId, sessionIdHeader, stickyStrategyKey)`, handoff `recordSuccessfulModel`, `rememberReasoning(reasoningSessionKey, modelKey, streamReasoning)`; trace `event:'ok'`; `logRequest(..., 'success', ..., ttfbMs, pinnedModelId, observeServedModel({platform, requestedModel: route.modelId, servedModel: upstreamModel}))`.
+- Catch: client-abort rethrown; post-commit errors ? `stream_error` frame ("stream interrupted") + `[DONE]` + `'committed'`; pre-commit errors bubble to the loop.
+
+**Non-stream dispatch**: `provider.chatCompletion(...)`; capture upstream `result.model` before overwriting with `route.modelId`; empty-completion and #809 classification checks (skipBench on length); inline dialect rescue ? structured `tool_calls`, `finish_reason='tool_calls'`, content = cleanText|null; `enforceJsonContent` for `response_format` requests (heals fenced/prose-wrapped JSON; otherwise throw truncated-JSON variant when finish=`length` or "ignored response_format", with `{skipBench:true, skipModelForRequest:true}`; deliberately AFTER rescue); repair all tool-call arguments + opt-in verdict; usage fallback = chars/4 over content+reasoning_content+tool-arg lengths; bookkeeping mirrors streaming (sticky uses `stickyStrategyKey` so group pins stick correctly, #341); response headers `X-Routed-Via`, fallback headers, `X-FreeLLM-Cache: MISS|OFF`; body = `sanitizeResponse(normalizeOutboundContent(result))` (array content flattened to string, #166); cached unless finish=`length`.
+
+**Loop callbacks**: `logFailure` ? trace fail + error log row (input tokens estimated, 0 out); `onFatal` ? 502 `{error:{message:'Provider error (<displayName>): …', type:'provider_error'}}`; `onRoutingExhausted` ? when the router rejected everything synchronously, console-warns each candidate disposition, then exhaustion headers + `exhaustion.status`/`exhaustionErrorPayload(exhaustion)`; `onExhausted` ? same rendering.
+
+**Legacy `POST /v1/completions`**: `CompletionBody` zod; detail join sliced to 5 issues; `max_tokens` defaults 128 when unset/=0; `providerSafeStop(stop)`; messages = `prependSystemPrompt(completionPromptToMessages(prompt,suffix), auth.systemPrompt)`; estimation ceil(chars/4) + `routingReserveTokens(max_tokens)`; budget guardrail rejects (max_tokens always effectively set).
+
+**`GET /v1/models`**: default = WHOLE catalog, one row per model id tagged usable; `?available=true` (aliases `connected`/`ready`) narrows to currently servable instances; dedup prefers available instances over disabled/keyless.
+
+**`POST /v1/embeddings`**: input array-or-single ? `runEmbeddings(model, inputs, dimensions)` ? `{object:'list', data:[{object:'embedding', index, embedding}], model: result.family, provider: result.platform, usage:{prompt_tokens,total_tokens}}`; `EmbeddingsError.status` else 502; type mapping 400?invalid_request_error, 429?rate_limit_error, else server_error; message `embedding error: <err.message ?? 'unknown'>`.
+
+**Images**: `ImageBody` zod `{model?, prompt min1, n int positive =4, size?, response_format url|b64_json}`; `mediaErrorType` maps 400/413?invalid_request_error, 401?authentication_error, etc.
+
+The file ends by re-exporting `logRequest` (moved to `lib/request-log.ts`; responses.ts imports it back through proxy.js).
+
+## 4. Responses API — `POST /v1/responses` (`routes/responses.ts`)
+
+Auth via `resolveAuth(extractApiToken(req))` ? 401 `{message:'Invalid API key', type:'authentication_error'}`. Zod ? 400 path-qualified `invalid_request_error`. Computer-use detection ? 422 `{code:'no_computer_use_model', message:'Computer use is not yet supported on /v1/responses (the computer / computer_use_preview tool and computer_call items have no chat-completions equivalent.)'}`. Unresolvable image parts (file_id-only) fail clearly. Uses the same fallback-loop exports (`exhaustionErrorPayload`, `setExhaustionHeaders`, `setFallbackHeaders`, `newFallbackState`, `recordUpstreamSuccess`, `runFallbackLoop`, `AttemptRecord`), sampling params via `pickSamplingParams`/`samplingParamSchemaFields`, token budget via `applyTokenBudget`, routed-via header, and imports `logRequest` from proxy.js. Streaming emits OpenAI Responses event sequence ending with `response.output_text.done` ? `response.content_part.done` ? `response.output_item.done`; tool arguments repaired at done-time against schemas; commits on FIRST tool-call delta (function_call item opened); deliberately NO schema verdict at done (past commit point). Empty completion throws with `skipBench` on finish=`length`.
+
+## 5. Anthropic Messages API (`routes/anthropic.ts`, 1108 lines)
+
+Mounted before proxyRouter on `/v1` (owns `POST /v1/messages`, `POST /v1/count_tokens`; content-negotiates `GET /v1/models` when `anthropic-version` present, exposing Claude-family discovery entries via `claudeFamilyDiscoveryEntries`). Imports document support (`convertDocumentBlock`, `documentRejectionMessage`), model mapping (`resolveAnthropicModel`), abort/error classification (`newHedgeAbortError`, `isClientAbortError`, `newClientAbortError`, `isUpstreamClassificationOutput`), and logs via `lib/request-log.js` directly. Translation helpers: `flattenSystem` joins text blocks with `\n`; `flattenToolResult` flattens string/array-of-blocks to text joined `\n`, JSON.stringify otherwise; `imageBlockToUrl` base64?data URI / url passthrough; `convertToolChoice` switches on `choice.type`. Non-stream path: inline-dialect rescue gated on `wantsTools && no structured tool_calls && respText`; unparseable ? throw ``unparseable inline tool-call dialect from <displayName>: …``; rescued calls ? `finish_reason:'tool_calls'`; then `repairToolArguments` against `toolSchemaMap`; opt-in verdict via `isToolArgumentValidationEnabled()`. Sticky scope = pinned catalog id for group-pinned requests. Uses the shared fallback loop with hedge/client-abort semantics identical to §3.
+
+## 6. Gemini native wire — `/v1beta` (`routes/gemini.ts` + `lib/gemini-wire.ts`)
+
+Passthrough zod schemas: `contents` min 1 of `{role?:'user'|'model', parts?}`; generate body `{contents, systemInstruction?, tools?, toolConfig?, generationConfig?}`. Errors shaped `{error:{code:<httpStatus>, message, status:<UPPERCASE_CODE>}}` (default code `INVALID_ARGUMENT`). Auth reads query `?key=` (warned for URL leakage) then `x-goog-api-key`. Model listing via shared `buildModelListing`; `modelShape(model, autoContextWindow, id='auto')` advertises `supportedGenerationMethods:['generateContent','streamGenerateContent','countTokens']`. `actionModel(req,suffix)` slices `/models/` prefix + suffix. `handleGenerate(req,res,stream)` dispatches suffixes `:streamGenerateContent` / `:generateContent` to internal endpoints `gemini/streamGenerateContent` | `gemini/generateContent`; countTokens route separate. Execution runs through `runInboundChat` (§11).
+
+## 7. Ollama emulation (`routes/ollama.ts`)
+
+Mode setting `ollama_emulation` ? `off | open-loopback | key-required`. Loopback detection strips `::ffff:` prefix, accepts 127.0.0.1/::1, refuses remote first `x-forwarded-for` hop. Owns fixed paths `/api/tags`, `/api/version`, `/api/show`, `/api/chat`, `/api/generate`, `/api/embed`, `/api/embeddings`; the legacy `/api/embeddings` falls through when a valid dashboard session is seen (shared path with the admin embeddings router). Chat/generate run `runInboundChat`; embeddings reuse `runEmbeddings`/`EmbeddingsError`; auth via `validateSession`, `buildModelListing`, and `extractApiToken`/`timingSafeStringEqual` from proxy.js.
+
+## 8. MCP server (`routes/mcp.ts`)
+
+`POST /mcp` — stateless Streamable-HTTP Model Context Protocol with a hand-rolled JSON-RPC implementation (~five methods, no SDK); `GET /mcp` ? 405; no sessions/server-initiated streams. Unified-key auth via Bearer or `x-api-key`. Tools expose: usable free models + per-platform supported parameters (`supportedParametersForPlatforms`), provider pool health, routing scores/strategy get/set (`getRoutingScores`, `getRoutingStrategy`, `setRoutingStrategy`, `RoutingStrategy` type from `services/scoring.js`), cache stats (`getCacheStats`), compression stats (`getCompressionStats`). Introspection only — inference stays on OpenAI/Anthropic surfaces.
+
+## 9. Client-profile keys (`lib/system-prompt.ts`)
+
+Prefix `sk-cp-`; minted by `/api/client-profiles`; stored as SHA-256 digest; compared via `timingSafeStringEqual` (HMAC-SHA256 digests, constant-time). Valid only on `/v1` inference; triggers injected system prompt; never valid on `/api` dashboard routes or `/mcp`.
+
+## 10. Middleware summary
+
+- `requireAuth.ts`: dashboard session gate as described in §2.
+- `rateLimit.ts`: two factories — `createProxyRateLimiter(rpm?)` (per-IP fixed window, WINDOW_MS 60_000, DEFAULT_RPM 120, MAX_TRACKED_IPS 10_000, env override PROXY_RATE_LIMIT_RPM, 0 disables) and `createAdminRateLimiter(rpm?)` for `/api`.
+- `errorHandler.ts`: inference-prefix-scoped error shaping; 413 mentions `REQUEST_BODY_LIMIT_MB` (default 25).
+- `client-context.ts`: ALS carrier for IP/UA consumed by `logRequest`.
+- `logRequest(platform, modelId, keyId, status, promptTokens, completionTokens, latencyMs, error, ttfbMs?, pinnedModelId?, servedModel?)` — shared logging (moved out of proxy.ts to break an import cycle).
+
+## 11. Provider-neutral execution engine (`lib/inbound-chat.ts`, 566 lines)
+
+Contract: `runInboundChat(req, res, input: InboundChatRequest, wire: InboundChatWire)`.
+- `InboundChatRequest`: `{model?, messages, stream, maxTokens?, temperature?, topP?, stop?, tools?, toolChoice?, parallelToolCalls?, topK?, responseFormat?, reasoningEffort?, sessionId?, endpoint}`.
+- `InboundChatResult`: `{route, text, reasoning, toolCalls, finishReason, promptTokens, completionTokens}`.
+- `InboundChatWire` (protocol translation owned by caller): `sendError(res,status,message,code?)`, `sendNonStream(res,result)`, `startStream(res,route)`, `sendTextDelta(res,route,text)`, optional `sendReasoningDelta`/`sendToolCalls`/`sendStreamError`, `finishStream(res,result)`.
+
+**Pipeline order**:
+1. `await normalizeMessageImages(input.messages)` — downscale over-threshold inline images in place BEFORE estimation/routing.
+2. `estimateTokens` = S ceil((contentToString(content)+S(tool name+arg lengths))/4).
+3. `applyTokenBudget(estimatedInputTokens, maxTokens)` ? rejection = 413 `tokenBudgetMessage(...)`, code `request_token_budget`.
+4. Default `maxTokens = input.maxTokens ?? min(1024, budget.maxTokens) ?? 1024`.
+5. `resolvePin`: auto (empty / `auto` / `auto:*`, case-insensitive) ? sticky preference via `getStickyModel(messages, sessionId)` (NO strategy key on this surface); pinned+unify ? strict chain (empty ? thrown error status 503 `no_providers_configured`); sticky honored only inside chain; else single-row catalog lookup ? 404 `model_not_found` ("disabled or is not in the catalog").
+6. State/attempts/wantsTools/imageRequest/`outputReserve=routingReserveTokens(maxTokens)`/schemas/toolSchemaMap; disconnect fan-out identical to §3 (clientAbort only — **no hedge signal here**).
+7. One `CompletionOptions` object built up front (temperature, max_tokens, top_p, top_k, stop, tools, tool_choice, parallel_tool_calls, response_format, reasoning_effort, signal).
+8. `runFallbackLoop.route()` ? `routeRequest(estimatedTotal, skipKeys, preferredModel, imageRequest, wantsTools, skipModels, strictChain, responseFormat!==undefined, skipPlatforms, outputReserve)`.
+
+**Non-stream dispatch**: chatCompletion ? extract message; empty/classification checks (skipBench on length); inline rescue with ids `call_<Date.now()>_<i>` and text=cleanText; repair ALL calls; opt-in verdict; usage fallback counts name+args lengths; `recordUpstreamSuccess`; `setStickyModel` ONLY when unpinned; `X-Routed-Via` + fallback headers set BEFORE `wire.sendNonStream`; `logRequest(..., pinnedLabel)`.
+
+**Stream dispatch**: `commit()` = X-Routed-Via + fallback headers + `wire.startStream` once. Per chunk: in-band error frame ALWAYS throws (post-commit lands in catch ? `wire.sendStreamError(sanitized)` + end + `'committed'`); text either forwarded immediately (!wantsTools or passthrough) or run through the same hold-window state machine (256-char probe cap); reasoning deltas commit immediately via optional `sendReasoningDelta`; tool deltas buffered including `thought_signature`/`thoughtSignature`. End-of-stream: held-text rescue (dialect marker containment test; unparseable throws; rescued calls appended at synthetic indexes 10000+i so they sort last; cleanText flushed as text); assembled calls filtered by name, repaired, signature passed through; opt-in verdict gated on `!committed` (tool-only turns can still fail over); optional `sendToolCalls`; empty-completion/classification checks return `'committed'` silently when `clientGone`; `wire.finishStream(res, normalized)` THEN `recordUpstreamSuccess` + sticky (unpinned only) + logRequest. Deliberate omissions vs the OpenAI surface: no context handoff, no GitHub truncation, no #797 reasoning memory, no response cache, no compression step, no usage-frame forwarding (wire owns framing).
+
+---
+
+**Corrections to earlier notes**: `anthropic.ts` is 1108 lines (not ~1300); `inbound-chat.ts` is 566 lines (~21 KB); `app.ts` also reveals `createAdminRateLimiter`, `clientContextMiddleware`, the two-tier body-limit path list, and the exact mount ordering that makes the Anthropic `models` negotiation possible.
+
+All 11 spec areas are now covered from primary sources. Remaining unread files (`sampling-params.ts`, `router.ts`, provider adapters under `providers/`) were only referenced, and their behavior is documented from call sites — say the word if you want those internals expanded too.

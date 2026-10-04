@@ -1,0 +1,25 @@
+{
+  "telegram": {
+    "botToken": "YOUR_BOT_TOKEN_FROM_BOTFATHER",
+    "allowedUsers": [123456789],
+    "allowedUsernames": ["your_telegram_username"]
+  },
+  "anthropic": {
+    "_comment": "apiKey is optional — omit it to authenticate via Claude OAuth, same as Claude Code",
+    "model": "claude-opus-4-6",
+    "maxTokens": 16384
+  },
+  "openai": {
+    "_comment": "Optional — without this, memory uses keyword search only (no embeddings)",
+    "apiKey": "sk-...",
+    "embeddingModel": "text-embedding-3-small"
+  },
+  "workspace": {
+    "dir": "~/",
+    "memoryDir": "~/.smolclaw/memory"
+  },
+  "daemon": {
+    "logLevel": "info",
+    "dataDir": "~/.smolclaw"
+  }
+}

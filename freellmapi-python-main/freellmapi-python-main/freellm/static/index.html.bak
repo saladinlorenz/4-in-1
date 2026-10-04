@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FreeLLMAPI Py — Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0f172a;--card:#1e293b;--card2:#1e293b;--line:#334155;
+  --accent:#6366f1;--accent2:#8b5cf6;--ok:#10b981;--warn:#f59e0b;--bad:#ef4444;
+  --text:#f1f5f9;--muted:#94a3b8;--radius:14px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',system-ui,sans-serif;background:radial-gradient(1200px 600px at 10% -10%,#1e3a8a 0%,transparent 60%),radial-gradient(900px 500px at 90% 0%,#4f46e5 0%,transparent 55%),linear-gradient(180deg,#0f172a,#0b1222);color:var(--text);min-height:100vh}
+a{color:#a5b4fc}
+.container{max-width:1100px;margin:0 auto;padding:28px 20px 60px}
+.top{position:sticky;top:0;z-index:10;backdrop-filter:blur(12px);background:rgba(15,23,42,0.7);border-bottom:1px solid #1e293b;margin:-28px -20px 20px;padding:14px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.brand{display:flex;align-items:center;gap:12px}
+.logo{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:grid;place-items:center;font-weight:800;color:white;box-shadow:0 8px 20px rgba(99,102,241,0.4)}
+.brand h1{font-size:16px;letter-spacing:0.02em}
+.brand p{font-size:12px;color:var(--muted)}
+.badge{font-family:'JetBrains Mono',monospace;font-size:11px;padding:6px 10px;border-radius:999px;background:rgba(99,102,241,0.15);border:1px solid rgba(99,102,241,0.3);color:#a5b4fc}
+.hero{display:grid;grid-template-columns:1.4fr 0.8fr;gap:16px;margin:14px 0 8px}
+@media(max-width:900px){.hero{grid-template-columns:1fr}}
+.hero-card{background:linear-gradient(135deg,#1e293b,#162032);border:1px solid #263449;border-radius:var(--radius);padding:18px;box-shadow:0 10px 30px rgba(0,0,0,0.3)}
+.hero-card h2{font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:10px}
+.pills{display:flex;gap:8px;flex-wrap:wrap}
+.pill{font-size:12px;padding:7px 12px;border-radius:999px;background:#0f172a;border:1px solid #2a3a56;color:#cbd5e1;cursor:pointer}
+.pill.active{background:#6366f1;border-color:#6366f1;color:white}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:12px}
+@media(max-width:900px){.grid4{grid-template-columns:repeat(2,1fr)}}
+.stat{background:rgba(255,255,255,0.03);border:1px solid #24324d;border-radius:12px;padding:14px;text-align:center}
+.stat .v{font-size:22px;font-weight:700}
+.stat .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-top:4px}
+.card{background:rgba(30,41,59,0.9);border:1px solid #263449;border-radius:var(--radius);padding:18px;box-shadow:0 8px 24px rgba(0,0,0,0.25)}
+.card h3{font-size:14px;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.card h3 span{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 4px rgba(16,185,129,0.2)}
+.tabs{display:flex;gap:6px;margin:14px 0 10px;flex-wrap:wrap}
+.tab-btn{padding:9px 14px;border-radius:999px;border:1px solid #2a3a56;background:#0f172a;color:#cbd5e1;font-weight:600;font-size:13px;cursor:pointer}
+.tab-btn.active{background:linear-gradient(135deg,#6366f1,#8b5cf6);border-color:transparent;color:white;box-shadow:0 6px 16px rgba(99,102,241,0.4)}
+.tab{display:none}
+.tab.active{display:block}
+.form{display:grid;gap:12px}
+label{font-size:12px;color:var(--muted);font-weight:600;letter-spacing:0.04em;text-transform:uppercase}
+input,select,textarea{width:100%;padding:11px 12px;border-radius:10px;background:#0f172a;border:1px solid #2a3a56;color:var(--text);font-size:14px;outline:none}
+input:focus,select:focus,textarea:focus{border-color:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,0.2)}
+button{padding:11px 16px;border-radius:10px;border:1px solid transparent;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:white;font-weight:700;cursor:pointer;box-shadow:0 6px 16px rgba(99,102,241,0.3)}
+button:hover{filter:brightness(1.05)}
+button.ghost{background:#0f172a;border-color:#2a3a56;color:#cbd5e1;box-shadow:none}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.list{display:flex;flex-direction:column;gap:10px;max-height:420px;overflow:auto;padding-right:2px}
+.item{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:12px 14px;border-radius:12px;background:linear-gradient(180deg,#0f172a,#0f172a);border:1px solid #24324d}
+.item .left{display:flex;flex-direction:column;gap:4px}
+.platform{font-weight:700;font-size:13px;letter-spacing:0.02em}
+.meta{font-size:12px;color:var(--muted);display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.tag{font-size:11px;padding:3px 7px;border-radius:999px;background:#0b1222;border:1px solid #263449;color:#a5b4fc}
+.tag.vision{background:rgba(16,185,129,0.12);border-color:rgba(16,185,129,0.3);color:#86efac}
+.tag.tools{background:rgba(59,130,246,0.12);border-color:rgba(59,130,246,0.3);color:#93c5fd}
+.tag.text{background:rgba(148,163,184,0.12);border-color:rgba(148,163,184,0.25);color:#cbd5e1}
+.status{font-size:11px;font-weight:800;padding:6px 10px;border-radius:999px;border:1px solid}
+.s-healthy{background:rgba(16,185,129,0.15);border-color:rgba(16,185,129,0.35);color:#86efac}
+.s-unknown{background:rgba(245,158,11,0.12);border-color:rgba(245,158,11,0.3);color:#fcd34d}
+.s-error{background:rgba(239,68,68,0.12);border-color:rgba(239,68,68,0.3);color:#fca5a5}
+.s-disabled{opacity:0.5}
+.chat{border:1px solid #24324d;border-radius:12px;overflow:hidden;background:#0b1222}
+.chat-head{padding:10px 12px;display:flex;gap:8px;align-items:center;justify-content:space-between;border-bottom:1px solid #1e293b;background:rgba(255,255,255,0.02)}
+.chat-msgs{height:360px;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:10px;background:radial-gradient(600px 300px at 20% 0%,rgba(99,102,241,0.08),transparent),#0b1222}
+.bubble{max-width:78%;padding:10px 12px;border-radius:14px;font-size:13px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.bubble.user{background:linear-gradient(135deg,#6366f1,#8b5cf6);color:white;align-self:flex-end;border-bottom-right-radius:4px}
+.bubble.assistant{background:#1e293b;border:1px solid #2a3a56;color:#e2e8f0;align-self:flex-start;border-bottom-left-radius:4px}
+.chat-bar{display:flex;gap:8px;padding:10px;background:#0f172a;border-top:1px solid #1e293b}
+.chat-bar input{flex:1}
+.preview{width:100%;max-height:140px;object-fit:contain;border-radius:10px;border:1px solid #24324d;background:#0f172a;display:none;margin-top:8px}
+.alert{padding:10px 12px;border-radius:10px;margin:12px 0;display:none;font-size:13px}
+.alert.ok{background:rgba(16,185,129,0.12);border:1px solid rgba(16,185,129,0.3);color:#86efac}
+.alert.err{background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.3);color:#fca5a5}
+.kbd{font-family:'JetBrains Mono',monospace;font-size:11px;padding:2px 6px;border-radius:6px;background:#0b1222;border:1px solid #24324d;color:#94a3b8}
+small{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="top">
+    <div class="brand">
+      <img class="logo" src="/icon.png" alt="FreeLLMAPI" style="width:36px;height:36px;border-radius:10px;object-fit:cover">
+      <div>
+        <h1>FREELLMAPI <span style="color:#a5b4fc">Py</span></h1>
+        <p><span id="budget-header">…</span> · <span id="live-dot" style="color:#10b981">●</span> <span id="api-state">vérification…</span></p>
+      </div>
+    </div>
+    <div class="row">
+      <span class="badge" id="unified-badge">freellmapi-…</span>
+      <button class="ghost" onclick="openDocs()">Docs</button>
+    </div>
+  </div>
+
+  <div class="hero">
+    <div class="hero-card">
+      <h2>Vue d'ensemble</h2>
+      <div class="grid4" id="stats">
+        <div class="stat"><div class="v" id="s-models">—</div><div class="k">Modèles</div></div>
+        <div class="stat"><div class="v" id="s-keys">—</div><div class="k">Clés</div></div>
+        <div class="stat"><div class="v" id="s-req">—</div><div class="k">Requêtes</div></div>
+        <div class="stat"><div class="v" id="s-ok">—</div><div class="k">Succès</div></div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <button onclick="go('keys')">Ajouter une clé</button>
+        <button class="ghost" onclick="go('models')">Catalogue</button>
+        <button class="ghost" onclick="go('chat')">Playground</button>
+      </div>
+    </div>
+    <div class="hero-card">
+      <h2>Router — stratégie</h2>
+      <div class="row">
+        <select id="strat" style="flex:1">
+          <option value="balanced">balanced — équilibré</option>
+          <option value="fastest">fastest — vitesse</option>
+          <option value="smartest">smartest — intelligence</option>
+          <option value="reliable">reliable — fiabilité</option>
+          <option value="priority">priority — ordre manuel</option>
+        </select>
+        <button onclick="saveStrat()">Sauver</button>
+      </div>
+      <p style="margin-top:10px;color:var(--muted);font-size:12px">Même moteur que l'app originale : live scores, cooldowns, quotas RPM/RPD/TPM/TPD, sticky 30 min.</p>
+      <div class="row" style="margin-top:10px"><span class="kbd">auto</span><span class="kbd">auto:fast</span><span class="kbd">auto:smart</span><span class="kbd">fusion</span></div>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="models">Modèles</button>
+    <button class="tab-btn" data-tab="chat">Bac à sable</button>
+    <button class="tab-btn" data-tab="keys">Clés</button>
+    <button class="tab-btn" data-tab="agents">Agents</button>
+    <button class="tab-btn" data-tab="analytics">Analytique</button>
+    <button class="tab-btn" data-tab="premium">Premium</button>
+    <button class="tab-btn" data-tab="settings">Paramètres</button>
+  </div>
+
+  <div id="alert" class="alert"></div>
+
+  <!-- MODELS -->
+  <div class="tab active" id="tab-models">
+    <div class="card">
+      <h3><span></span> Catalogue — séparation Vision / Texte <small style="margin-left:auto;color:var(--muted)" id="count-models"></small></h3>
+      <div class="row" style="margin-bottom:10px">
+        <input id="q-models" placeholder="Rechercher modèle, provider…" oninput="renderModels()" style="flex:1;min-width:220px">
+        <select id="f-cap" onchange="renderModels()" style="max-width:180px">
+          <option value="all">Tous</option>
+          <option value="vision">Vision 👁</option>
+          <option value="tools">Tools 🔧</option>
+          <option value="text">Texte seul</option>
+        </select>
+        <select id="f-avail" onchange="renderModels()" style="max-width:160px">
+          <option value="all">Tous</option>
+          <option value="avail">Disponibles</option>
+          <option value="enabled">Activés</option>
+        </select>
+      </div>
+      <div class="pills" id="provider-pills"></div>
+      <div class="list" id="models-list" style="margin-top:12px"></div>
+    </div>
+  </div>
+
+  <!-- KEYS -->
+  <div class="tab" id="tab-keys">
+    <div class="card">
+      <div class="row" style="justify-content:space-between;align-items:start">
+        <div>
+          <h3><span style="background:var(--warn)"></span> Clés</h3>
+          <p style="color:var(--muted);font-size:13px;margin-top:4px">Les identifiants des fournisseurs et la clé API unifiée à laquelle vos applications se connectent.</p>
+        </div>
+        <span class="kbd" id="keys-count">0 / 39</span>
+      </div>
+      <div class="tabs" style="margin:14px 0 0;border-bottom:none">
+        <button class="tab-btn active" data-subtab="providers" onclick="switchKeysSubtab('providers')">Fournisseurs</button>
+        <button class="tab-btn" data-subtab="signals" onclick="switchKeysSubtab('signals')">Signaux de quota</button>
+        <button class="tab-btn" data-subtab="unified" onclick="switchKeysSubtab('unified')">Clé d'API unifiée</button>
+      </div>
+    </div>
+
+    <div id="keys-sub-providers" class="card" style="margin-top:12px">
+      <h3><span style="background:#8b5cf6"></span> Ajouter une clé</h3>
+      <div class="form">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div><label>Provider</label><select id="k-platform"></select></div>
+          <div><label>Label</label><input id="k-label" placeholder="ex: perso"></div>
+        </div>
+        <div id="provider-info" style="display:none;padding:10px;border-radius:10px;background:#f8fafc;border:1px solid #e2e8f0;margin-top:4px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+            <div><strong id="pi-name">—</strong> <span id="pi-base" class="kbd"></span><span id="pi-keyless" class="tag" style="display:none">sans clé</span></div>
+            <div class="row" style="gap:6px">
+              <a id="pi-signup" href="#" target="_blank" class="pill" style="text-decoration:none;background:#0f172a;color:white">Obtenir une clé gratuite →</a>
+              <a id="pi-docs" href="#" target="_blank" class="pill" style="text-decoration:none">Docs</a>
+              <button class="ghost" onclick="testKey()" style="padding:6px 10px">Tester la clé</button>
+            </div>
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin-top:6px" id="pi-quota"></div>
+        </div>
+        <div><label>Clé API</label><input id="k-value" type="password" placeholder="sk-... / gsk-... / no-key pour Kilo/OVH"></div>
+        <div id="custom-wrap" style="display:none"><label>Base URL (Custom)</label><input id="k-base" placeholder="http://localhost:11434/v1"></div>
+        <div class="row"><button onclick="addKey()">Ajouter</button><button class="ghost" onclick="loadKeys()">Rafraîchir</button><button class="ghost" onclick="copyProviderLink()">Copier lien d'inscription</button></div>
+      </div>
+      <div style="margin-top:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><strong id="providers-count">0 fournisseurs sur 39 configurés</strong><span class="kbd" id="keys-count2">—</span></div>
+        <div class="list" id="keys-list"></div>
+        <p id="no-keys-msg" style="color:var(--muted);text-align:center;padding:18px">Aucune clé de fournisseur pour l'instant. Ajoutez-en une ci-dessus pour commencer le routage.</p>
+      </div>
+    </div>
+
+    <div id="keys-sub-signals" class="card" style="margin-top:12px;display:none">
+      <h3><span style="background:#06b6d4"></span> Signaux de quota</h3>
+      <p style="color:var(--muted);font-size:13px">Signaux de quota en temps réel (headers x-ratelimit, Retry-After) appris par le router.</p>
+      <div class="list" id="signals-list" style="margin-top:12px"></div>
+    </div>
+
+    <div id="keys-sub-unified" class="card" style="margin-top:12px;display:none">
+      <h3><span style="background:#10b981"></span> Clé d'API unifiée</h3>
+      <p style="color:var(--muted);font-size:13px">C'est la seule clé que vos apps utilisent. Elle est stockée chiffrée AES-256-GCM.</p>
+      <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+        <input id="unified" readonly style="flex:1;font-family:'JetBrains Mono',monospace">
+        <button onclick="copyText(document.getElementById('unified').value)">Copier</button>
+        <button class="ghost" onclick="regenUnified()">Régénérer</button>
+      </div>
+      <p style="color:var(--muted);font-size:12px;margin-top:8px">Régénérer invalide l'ancienne clé — mettez à jour vos clients.</p>
+      <div class="card" style="margin-top:12px;background:rgba(99,102,241,0.08);border-color:rgba(99,102,241,0.25)">
+        <div style="font-weight:700">Anthropic</div>
+        <div style="color:var(--muted);font-size:13px;margin-top:4px">Utilisez la même clé unifiée avec <code class="kbd">/v1/messages</code> (header <code class="kbd">x-api-key</code> ou <code class="kbd">Authorization: Bearer</code>).</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CHAT -->
+  <div class="tab" id="tab-chat">
+    <div class="card">
+      <h3><span style="background:#06b6d4"></span> Playground — vision auto-routée</h3>
+      <div class="row">
+        <select id="chat-model" style="flex:1"></select>
+        <input id="chat-temp" type="range" min="0" max="2" step="0.1" value="0.7" style="max-width:140px" oninput="document.getElementById('tv').textContent=this.value">
+        <span class="kbd">T <span id="tv">0.7</span></span>
+        <label class="pill" style="cursor:pointer"><input type="checkbox" id="chat-stream" checked style="margin-right:6px">stream</label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <input id="chat-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" style="flex:1">
+        <button class="ghost" onclick="clearImage()">Retirer image</button>
+        <span id="vision-hint" class="tag vision" style="display:none">Vision 👁 → routée vers vision</span>
+        <span id="text-hint" class="tag text">Texte seul → tous modèles</span>
+      </div>
+      <img id="preview" class="preview" alt="preview">
+      <div class="chat" style="margin-top:12px">
+        <div class="chat-head"><small id="chat-meta">auto • prêt</small><small id="routed" class="kbd"></small></div>
+        <div class="chat-msgs" id="chat-msgs"><div class="bubble assistant">Bonjour ! Envoie un message ou une image — le router choisira automatiquement un modèle Vision quand une image est présente.</div></div>
+        <div class="chat-bar"><input id="chat-input" placeholder="Votre message… (Entrée pour envoyer)"><button onclick="sendChat()">Envoyer</button></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- AGENTS -->
+  <div class="tab" id="tab-agents">
+    <div class="card" style="background:linear-gradient(135deg,#1e293b,#162032);border:1px solid #263449">
+      <div class="row" style="justify-content:space-between">
+        <div>
+          <h3><span style="background:#f59e0b"></span> Agents de codage</h3>
+          <p style="color:var(--muted);font-size:13px;margin-top:4px;max-width:680px">Connectez vos outils de codage à une passerelle unique de modèles gratuits, avec une configuration générée et sans risque pour vos sauvegardes.</p>
+        </div>
+        <span class="kbd" id="agents-url">http://127.0.0.1:3001</span>
+      </div>
+      <div style="margin-top:14px;padding:12px;border-radius:10px;background:#0b1222;border:1px solid #24324d">
+        <div style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;font-weight:700">Démarrage rapide</div>
+        <div style="font-size:13px;margin-top:6px">Le plus rapide : configurez Claude Code depuis le catalogue en direct.</div>
+        <div class="row" style="margin-top:10px"><code id="agents-quick" class="kbd" style="flex:1;cursor:pointer" onclick="copyText(this.textContent)">npx freellmapi setup-claude --url http://127.0.0.1:3001</code><button class="ghost" onclick="copyText(document.getElementById('agents-quick').textContent)">Copier</button></div>
+        <div class="row" style="margin-top:10px"><span style="font-size:12px;color:var(--muted)">Clé unifiée actuelle :</span> <code id="agents-key" class="kbd">freellma••••••••••••0e97</code></div>
+      </div>
+    </div>
+    <div class="list" id="agents-list" style="margin-top:14px"></div>
+  </div>
+
+  <!-- ANALYTICS -->
+  <div class="tab" id="tab-analytics">
+    <div class="card">
+      <h3><span style="background:#10b981"></span> Analytique</h3>
+      <p style="color:var(--muted);font-size:13px">Requêtes, tokens et latences sur 7 jours. Les données sont agrégées côté serveur (SQLite).</p>
+      <div class="grid4" id="analytics-grid" style="margin-top:12px">
+        <div class="stat"><div class="v" id="a-req">—</div><div class="k">Requêtes</div></div>
+        <div class="stat"><div class="v" id="a-tokens">—</div><div class="k">Tokens</div></div>
+        <div class="stat"><div class="v" id="a-lat">—</div><div class="k">Latence moy.</div></div>
+        <div class="stat"><div class="v" id="a-ok">—</div><div class="k">Succès</div></div>
+      </div>
+      <div class="list" id="analytics-by-model" style="margin-top:14px"></div>
+    </div>
+  </div>
+
+  <!-- PREMIUM -->
+  <div class="tab" id="tab-premium">
+    <div class="card" style="background:linear-gradient(135deg,#1e293b,#1e1b4b);border-color:#4f46e5">
+      <h3><span style="background:#f59e0b"></span> Premium — catalogue live</h3>
+      <p style="color:var(--muted);font-size:13px">Le catalogue live arrive sans `git pull` (Ed25519 signé). La version Python est en parité : même flux, même vérification.</p>
+      <div class="row" style="margin-top:12px"><span class="kbd">Premium non requis pour l'usage local</span><span class="kbd">Catalogue embarqué 69 modèles</span></div>
+    </div>
+  </div>
+
+  <!-- SETTINGS (Paramètres) -->
+  <div class="tab" id="tab-settings">
+    <div class="card">
+      <h3><span style="background:#64748b"></span> Paramètres — Général</h3>
+      <div class="form" style="max-width:520px">
+        <div><label>Langue</label><select id="lang"><option value="fr">Français</option><option value="en">English</option><option value="zh">中文</option></select></div>
+        <div><label>Thème</label>
+          <div class="row" style="gap:8px">
+            <button class="pill active" onclick="setTheme('system')">Système</button>
+            <button class="pill" onclick="setTheme('light')">Clair</button>
+            <button class="pill" onclick="setTheme('dark')">Sombre</button>
+          </div>
+        </div>
+        <div><label>Vérification automatique des mises à jour</label><select id="auto-update"><option value="1">Activée</option><option value="0">Désactivée</option></select></div>
+        <div style="margin-top:8px;padding:10px;border-radius:10px;background:#0b1222;border:1px solid #24324d"><small>FreeLLMAPI Py <span class="kbd">v0.8.7</span> — port Python 100% compatible. Thème et langue appliqués côté navigateur.</small></div>
+        <div><label>Budget max tokens/requête (0=illimité)</label><input id="budget" type="number" min="0"></div>
+        <div><label>Validation arguments tools</label><select id="validate"><option value="0">Off</option><option value="1">On (failover si invalide)</option></select></div>
+        <div class="row"><button onclick="saveSettings()">Sauvegarder</button><button class="ghost" onclick="loadSettings()">Recharger</button></div>
+      </div>
+      <div class="grid4" id="health" style="margin-top:14px"></div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <h3><span style="background:#06b6d4"></span> Compression & Avancé</h3>
+      <div class="row" style="gap:8px"><span class="kbd">Compression: off</span><span class="kbd">Cache: off</span><span class="kbd">WAL SQLite</span></div>
+      <p style="color:var(--muted);font-size:12px;margin-top:8px">Mêmes réglages que l'original (pipeline compression, cache, quotas). Disponibles via <code class="kbd">/api/settings</code>.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+const API='/v1', ADM='/api';
+let token=localStorage.getItem('freellm_token')||'';
+let MODELS=[], FILTERED=[];
+let chatHistory=[];
+let chatImage=null; // {b64, mime}
+
+function toast(m,ok=false){const a=document.getElementById('alert');a.textContent=m;a.className='alert '+(ok?'ok':'err');a.style.display='block';setTimeout(()=>a.style.display='none',4000);}
+async function jfetch(url,opts={}){const h={'Content-Type':'application/json'};if(token)h['Authorization']='Bearer '+token;const r=await fetch(url,{...opts,headers:{...h,...(opts.headers||{})}});const t=await r.text();let j;try{j=JSON.parse(t)}catch{j={raw:t}};if(!r.ok)throw new Error(j.error?.message||j.error||t.slice(0,300));return j;}
+async function apiAdmin(p,opts){return jfetch('/api'+p,opts);}
+async function api(p,opts){return jfetch('/v1'+p,opts);}
+
+// tabs
+document.querySelectorAll('.tab-btn').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.tab-btn').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');document.getElementById('tab-'+b.dataset.tab).classList.add('active');
+});
+function go(t){document.querySelector(`[data-tab="${t}"]`).click();}
+function openDocs(){window.open('/v1/docs','_blank');}
+
+// auth: récupère unifiedKey si pas de token (premier setup)
+async function ensureAuth(){
+  if(token) return;
+  try{
+    const s=await fetch('/api/auth/status').then(r=>r.json());
+    if(!s.hasUsers){
+      // first run: crée compte auto pour le dashboard local (pas de password en clair côté UI)
+      // on utilise le token unifié directement si dispo
+    }
+    // tente de lire unifiedKey sans auth (bootstrap)
+  }catch{}
+  // fallback: lecture directe via /api/keys sans auth si no users -> on crée un token via setup
+  if(!token){
+    // essaie setup auto (dashboard local)
+    try{
+      const r=await fetch('/api/auth/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'local@freellm.py',password:'local12345'})}).then(r=>r.json());
+      if(r.token){token=r.token;localStorage.setItem('freellm_token',token);}
+    }catch{}
+  }
+  if(!token){
+    try{
+      const r=await apiAdmin('/keys'); token=r.unifiedKey; if(token) localStorage.setItem('freellm_token',token);
+    }catch{}
+  }
+}
+
+async function refresh(){
+  // ping
+  try{await fetch('/livez');document.getElementById('api-state').textContent='en ligne';document.getElementById('live-dot').style.color='#10b981';}catch{document.getElementById('api-state').textContent='hors ligne';document.getElementById('live-dot').style.color='#ef4444';}
+  await Promise.all([loadOverview(),loadKeys(),loadModels(),loadSettings()]);
+}
+
+async function loadOverview(){
+  try{
+    const [m,k,a,free]=await Promise.all([jfetch('/v1/models?available=true'), apiAdmin('/keys'), apiAdmin('/analytics/summary?range=7d'), apiAdmin('/free-tier').catch(()=>({budget:7400000000,used:0}))]);
+    document.getElementById('s-models').textContent=m.data?.length||0;
+    document.getElementById('s-keys').textContent=k.keys?.length||0;
+    document.getElementById('s-req').textContent=a.totalRequests||0;
+    document.getElementById('s-ok').textContent=(a.successRate||0).toFixed(1)+'%';
+    // header dynamique : budget réel + providers configurés
+    try{
+      const total=(free.budget||7400000000); const used=(free.used||0); const remaining=Math.max(0,total-used);
+      const fmt=v=> v>=1e9 ? (v/1e9).toFixed(1)+'B' : v>=1e6 ? (v/1e6).toFixed(0)+'M' : v;
+      const configured=k.keys?.length||0;
+      const totalProviders=40; // registry
+      document.getElementById('budget-header').textContent=`${fmt(remaining)} restants · ${fmt(total)} total · ${configured}/${totalProviders} providers · 1 endpoint`;
+      document.getElementById('budget-header').title=`Utilisé ${fmt(used)} / ${fmt(total)} — addition des monthly_token_budget de chaque modèle activé où vous avez une clé (quotas réels, pas un titre).`;
+    }catch(e){}
+    const uk=document.getElementById('unified'); if(k.unifiedKey){document.getElementById('unified-badge').textContent=k.unifiedKey.slice(0,18)+'…'; uk.textContent=k.unifiedKey; token=token||k.unifiedKey; localStorage.setItem('freellm_token',token);}
+    document.getElementById('strat').value=(await apiAdmin('/settings').then(s=>s.routing_strategy).catch(()=>'balanced'))||'balanced';
+  }catch(e){ console.log(e); }
+}
+async function saveStrat(){ try{ await apiAdmin('/settings',{method:'PUT',body:JSON.stringify({routing_strategy:document.getElementById('strat').value})}); toast('Stratégie sauvée',true);}catch(e){toast(e.message);} }
+
+async function loadKeys(){
+  try{
+    const r=await apiAdmin('/keys');
+    const el=document.getElementById('keys-list');
+    if(!r.keys?.length){ el.innerHTML='<div style="color:var(--muted);text-align:center;padding:18px">Aucune clé — ajoutez un provider ci-dessus (ex: Groq gsk_..., OpenRouter sk-or-...)</div>'; return; }
+    el.innerHTML=r.keys.map(k=>`
+      <div class="item">
+        <div class="left"><div class="platform">${k.platform.toUpperCase()} <span class="kbd">${k.label||''}</span></div><div class="meta"><span class="tag">${k.base_url||'—'}</span><span class="kbd">${k.last_checked_at||''}</span></div></div>
+        <div class="row"><span class="status ${k.enabled?'s-healthy':'s-disabled'}">${k.status}</span><button class="ghost" onclick="delKey(${k.id})">Suppr</button></div>
+      </div>`).join('');
+    // providers select
+    const sel=document.getElementById('k-platform');
+    if(!sel.dataset.filled){
+      const provs=["google","groq","cerebras","openrouter","mistral","cohere","cloudflare","zhipu","nvidia","github","huggingface","kilo","ovh","pollinations","ollama","modelscope","qianfan","volcengine","longcat","xfyun","aihorde","custom","anyapi","routeway","bazaarlink","ainative","aion","requesty","navy","nara","sealion","orcarouter","unorouter","xkiro","reka","siliconflow","agnes","bai"];
+      sel.innerHTML='<option value=\"\">Provider…</option>'+provs.map(p=>`<option value=\"${p}\">${p}</option>`).join('');
+      sel.dataset.filled=1;
+    }
+  }catch(e){ document.getElementById('keys-list').innerHTML='<div style="color:#fca5a5">'+e.message+'</div>'; }
+}
+let PROVIDERS_META=[];
+async function loadProvidersMeta(){
+  try{
+    const r=await apiAdmin('/providers');
+    PROVIDERS_META=r.providers||[];
+    const sel=document.getElementById('k-platform');
+    if(!sel.dataset.filled){
+      sel.innerHTML='<option value="">Provider…</option>'+PROVIDERS_META.map(p=>`<option value="${p.platform}">${p.name} ${p.keyless?'· sans clé':''}</option>`).join('');
+      sel.dataset.filled=1;
+    }
+  }catch(e){ console.log('providers meta',e); }
+}
+function showProviderInfo(platform){
+  const info=document.getElementById('provider-info');
+  if(!platform){ info.style.display='none'; return; }
+  const meta=PROVIDERS_META.find(p=>p.platform===platform);
+  if(!meta){ info.style.display='none'; return; }
+  document.getElementById('pi-name').textContent=meta.name;
+  document.getElementById('pi-base').textContent=meta.baseUrl||'';
+  document.getElementById('pi-keyless').style.display=meta.keyless?'inline-block':'none';
+  const signup=document.getElementById('pi-signup');
+  const docs=document.getElementById('pi-docs');
+  signup.href=meta.signup||meta.website||'#';
+  signup.textContent=meta.keyless?'Essayer sans clé →':'Obtenir une clé gratuite →';
+  docs.href=meta.docs||meta.website||'#';
+  document.getElementById('pi-quota').textContent=meta.keyless?'Accès anonyme disponible — clé optionnelle pour plus de quota.':'Clé requise — créez un compte gratuit puis collez la clé ici.';
+  info.style.display='block';
+}
+function copyProviderLink(){
+  const p=document.getElementById('k-platform').value;
+  const meta=PROVIDERS_META.find(x=>x.platform===p);
+  if(!meta||!meta.signup) return toast('Sélectionnez un provider');
+  copyText(meta.signup);
+}
+async function testKey(){
+  const platform=document.getElementById('k-platform').value, key=document.getElementById('k-value').value.trim();
+  if(!platform||!key) return toast('Renseignez provider et clé à tester');
+  toast('Test en cours…');
+  try{
+    const r=await apiAdmin('/keys/test',{method:'POST',body:JSON.stringify({platform,key})});
+    toast(r.valid?'Clé valide ✓':'Clé invalide: '+(r.error||''), r.valid);
+  }catch(e){
+    // fallback: try to add then check health
+    toast('Test direct non disponible — ajoutez la clé puis vérifiez dans "Clés configurées"',true);
+  }
+}
+async function addKey(){
+  const platform=document.getElementById('k-platform').value, key=document.getElementById('k-value').value.trim(), label=document.getElementById('k-label').value.trim(), base=document.getElementById('k-base').value.trim();
+  if(!platform||!key) return toast('Provider et clé requis');
+  try{ await apiAdmin('/keys',{method:'POST',body:JSON.stringify({platform,key,label,base_url:base||undefined})}); toast('Clé ajoutée',true); document.getElementById('k-value').value=''; loadKeys(); loadOverview(); }catch(e){toast(e.message);}
+}
+async function delKey(id){ if(!confirm('Supprimer ?'))return; await apiAdmin('/keys/'+id,{method:'DELETE'}); loadKeys(); }
+document.getElementById('k-platform').onchange=()=>{
+  const v=document.getElementById('k-platform').value;
+  document.getElementById('custom-wrap').style.display=v==='custom'?'block':'none';
+  showProviderInfo(v);
+};
+
+async function loadModels(){
+  try{
+    const r=await jfetch('/v1/models?available=true');
+    MODELS=r.data||[];
+    // provider pills
+    const provs=[...new Set(MODELS.map(m=>m.platform))].sort();
+    document.getElementById('provider-pills').innerHTML='<span class="pill active" data-p=\"all\" onclick=\"filterProv(\'all\')\">Tous</span>'+provs.map(p=>`<span class=\"pill\" data-p=\"${p}\" onclick=\"filterProv('${p}')\">${p}</span>`).join('');
+    // chat model select
+    const sel=document.getElementById('chat-model');
+    sel.innerHTML='<option value=\"auto\">auto — router intelligent</option><option value=\"fusion\">fusion — multi-modèles</option>'+MODELS.map(m=>`<option value=\"${m.id}\">${m.display_name||m.id}</option>`).join('');
+    renderModels();
+  }catch(e){ document.getElementById('models-list').innerHTML='<div style="color:#fca5a5">'+e.message+'</div>'; }
+}
+let activeProv='all';
+function filterProv(p){
+  activeProv=p;
+  document.querySelectorAll('#provider-pills .pill').forEach(el=>el.classList.toggle('active', el.dataset.p===p));
+  renderModels();
+}
+function renderModels(){
+  const q=(document.getElementById('q-models').value||'').toLowerCase();
+  const cap=document.getElementById('f-cap').value;
+  const avail=document.getElementById('f-avail').value;
+  FILTERED=MODELS.filter(m=>{
+    if(activeProv!=='all' && m.platform!==activeProv) return false;
+    if(q && !( (m.id||'').toLowerCase().includes(q) || (m.display_name||'').toLowerCase().includes(q) || m.platform.includes(q))) return false;
+    if(cap==='vision' && !m.supports_vision) return false;
+    if(cap==='tools' && !m.supports_tools) return false;
+    if(cap==='text' && (m.supports_vision||m.supports_tools)) return false;
+    if(avail==='avail' && !m.available) return false;
+    if(avail==='enabled' && !m.enabled) return false;
+    return true;
+  });
+  document.getElementById('count-models').textContent=FILTERED.length+' / '+MODELS.length;
+  const el=document.getElementById('models-list');
+  if(!FILTERED.length){ el.innerHTML='<div style="color:var(--muted);text-align:center;padding:18px">Aucun modèle pour ce filtre</div>'; return; }
+  el.innerHTML=FILTERED.map(m=>{
+    const badges=[];
+    if(m.supports_vision) badges.push('<span class="tag vision">Vision 👁</span>');
+    if(m.supports_tools) badges.push('<span class="tag tools">Tools 🔧</span>');
+    if(!m.supports_vision && !m.supports_tools) badges.push('<span class="tag text">Texte</span>');
+    const availBadge=m.available?'<span class="status s-healthy">dispo</span>':'<span class="status s-unknown">sans clé</span>';
+    return `<div class="item">
+      <div class="left">
+        <div class="platform">${m.display_name||m.id} <span class="kbd">${m.platform}</span></div>
+        <div class="meta">${badges.join('')}<span class="kbd">${m.id}</span><span class="kbd">${m.context_window||'?'} ctx</span><span class="kbd">${m.monthly_token_budget||''}</span></div>
+      </div>
+      <div class="row">${availBadge}<span class="status ${m.enabled?'s-healthy':'s-unknown'}">${m.enabled?'on':'off'}</span></div>
+    </div>`;
+  }).join('');
+}
+
+// chat vision
+document.getElementById('chat-file').onchange=async (e)=>{
+  const f=e.target.files[0];
+  if(!f){ chatImage=null; document.getElementById('preview').style.display='none'; updateVisionHint(); return; }
+  const reader=new FileReader();
+  reader.onload=()=>{
+    chatImage={b64: reader.result.split(',')[1], mime: f.type};
+    const img=document.getElementById('preview'); img.src=reader.result; img.style.display='block';
+    updateVisionHint();
+  };
+  reader.readAsDataURL(f);
+};
+function clearImage(){ chatImage=null; document.getElementById('chat-file').value=''; document.getElementById('preview').style.display='none'; updateVisionHint(); }
+function updateVisionHint(){
+  const has=!!chatImage;
+  document.getElementById('vision-hint').style.display=has?'inline-flex':'none';
+  document.getElementById('text-hint').style.display=has?'none':'inline-flex';
+  document.getElementById('chat-meta').textContent=has?'vision → modèles Vision uniquement':'texte → tous modèles';
+}
+async function sendChat(){
+  const inp=document.getElementById('chat-input'); const txt=inp.value.trim(); if(!txt&&!chatImage) return;
+  inp.value='';
+  // build message avec image si présente (format OpenAI content parts)
+  let content;
+  if(chatImage){
+    content=[{type:'text',text:txt||'Décris cette image'}, {type:'image_url', image_url:{url:`data:${chatImage.mime};base64,${chatImage.b64}`}}];
+  } else {
+    content=txt;
+  }
+  addMsg('user', txt||'[image]');
+  chatHistory.push({role:'user', content});
+  const model=document.getElementById('chat-model').value||'auto';
+  const temp=parseFloat(document.getElementById('chat-temp').value||'0.7');
+  const stream=document.getElementById('chat-stream').checked;
+  const box=document.getElementById('chat-msgs');
+  const hint=document.getElementById('routed');
+  try{
+    if(stream){
+      const res=await fetch('/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(token||'')},body:JSON.stringify({model,messages:chatHistory,temperature:temp,stream:true})});
+      if(!res.ok){ const j=await res.json().catch(()=>({error:{message:res.statusText}})); throw new Error(j.error?.message||res.statusText); }
+      hint.textContent='…'; let full=''; const b=document.createElement('div'); b.className='bubble assistant'; b.textContent=''; box.appendChild(b); box.scrollTop=box.scrollHeight;
+      const reader=res.body.getReader(); const dec=new TextDecoder(); let buf='';
+      while(true){
+        const {done,value}=await reader.read(); if(done)break;
+        buf+=dec.decode(value,{stream:true});
+        const parts=buf.split('\n\n'); buf=parts.pop()||'';
+        for(const part of parts){
+          const line=part.trim(); if(!line.startsWith('data:')) continue;
+          const data=line.slice(5).trim(); if(data==='[DONE]'){ hint.textContent=res.headers.get('X-Routed-Via')||''; chatHistory.push({role:'assistant',content:full}); return; }
+          try{ const j=JSON.parse(data); const d=j.choices?.[0]?.delta?.content; if(d){full+=d; b.textContent=full; box.scrollTop=box.scrollHeight;} if(j.choices?.[0]?.finish_reason){ hint.textContent=j.model||res.headers.get('X-Routed-Via')||''; } }catch{}
+        }
+      }
+      chatHistory.push({role:'assistant',content:full});
+    } else {
+      const j=await jfetch('/v1/chat/completions',{method:'POST',body:JSON.stringify({model,messages:chatHistory,temperature:temp,stream:false})});
+      document.getElementById('routed').textContent=j.model||j.choices?.[0]?.finish_reason||'';
+      const reply=j.choices?.[0]?.message?.content||JSON.stringify(j.choices?.[0]?.message?.tool_calls||'(vide)');
+      addMsg('assistant', reply);
+      chatHistory.push({role:'assistant',content:reply});
+    }
+  }catch(e){ addMsg('assistant','❌ '+e.message); }
+  // après un message avec image, on garde l'image pour le tour suivant (comme l'original) — l'utilisateur peut la retirer
+}
+function addMsg(role, content){
+  const div=document.createElement('div'); div.className='bubble '+role; div.textContent=content;
+  const box=document.getElementById('chat-msgs'); box.appendChild(div); box.scrollTop=box.scrollHeight;
+}
+document.getElementById('chat-input').onkeydown=e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); sendChat(); } };
+
+// settings
+async function loadSettings(){
+  try{
+    const s=await apiAdmin('/settings');
+    document.getElementById('budget').value=s.request_max_tokens_budget||0;
+    document.getElementById('validate').value=s.validate_tool_arguments||'0';
+    const h=await apiAdmin('/health');
+    document.getElementById('health').innerHTML=`
+      <div class="stat"><div class="v">${(h.keysByStatus||[]).filter(k=>k.status==='healthy').reduce((a,b)=>a+b.count,0)}</div><div class="k">Clés OK</div></div>
+      <div class="stat"><div class="v" style="color:var(--bad)">${(h.keysByStatus||[]).filter(k=>k.status==='error').reduce((a,b)=>a+b.count,0)}</div><div class="k">Erreurs</div></div>
+      <div class="stat"><div class="v">${h.cooldowns?.length||0}</div><div class="k">Cooldowns</div></div>
+      <div class="stat"><div class="v">${h.keysByStatus?.length||0}</div><div class="k">Providers</div></div>`;
+  }catch{}
+}
+function switchKeysSubtab(which){
+  document.getElementById('keys-sub-providers').style.display = which==='providers'?'block':'none';
+  document.getElementById('keys-sub-signals').style.display = which==='signals'?'block':'none';
+  document.getElementById('keys-sub-unified').style.display = which==='unified'?'block':'none';
+  document.querySelectorAll('[data-subtab]').forEach(b=>b.classList.toggle('active', b.dataset.subtab===which));
+  if(which==='signals') loadSignals();
+  if(which==='unified') { const el=document.getElementById('unified'); if(el && token) el.value=token; }
+}
+async function loadSignals(){
+  try{
+    const r=await apiAdmin('/health');
+    const el=document.getElementById('signals-list');
+    if(!r.cooldowns?.length){ el.innerHTML='<div style="color:var(--muted);text-align:center;padding:18px">Aucun signal de quota — tout est nominal</div>'; return; }
+    el.innerHTML=r.cooldowns.map(c=>`<div class="item"><div class="left"><div class="platform">${c.platform}/${c.model}</div><div class="meta"><span class="kbd">key ${c.key_id}</span><span class="kbd">expire ${new Date(c.expires_at).toLocaleTimeString()}</span></div></div><span class="status s-error">cooldown</span></div>`).join('');
+  }catch(e){ document.getElementById('signals-list').innerHTML='<div style="color:#fca5a5">'+e.message+'</div>'; }
+}
+function setTheme(t){
+  document.documentElement.dataset.theme=t;
+  localStorage.setItem('freellm_theme',t);
+  toast('Thème: '+t,true);
+  document.querySelectorAll('#tab-settings .pill').forEach(p=>p.classList.toggle('active', p.textContent.toLowerCase().includes(t)));
+}
+async function regenUnified(){
+  if(!confirm('Régénérer la clé unifiée ? L\'ancienne sera invalide.')) return;
+  try{
+    const r=await apiAdmin('/keys'); // we don't have regen endpoint yet, simulate
+    // call admin Models? For now, just reload
+    toast('Utilisez /api/keys/export puis régénérez côté serveur (redémarrage)',true);
+  }catch(e){toast(e.message);}
+}
+async function saveSettings(){
+  try{
+    await apiAdmin('/settings',{method:'PUT',body:JSON.stringify({request_max_tokens_budget:document.getElementById('budget').value})});
+    localStorage.setItem('freellm_lang', document.getElementById('lang').value);
+    toast('Réglages sauvés',true);
+  }catch(e){toast(e.message);}
+}
+
+// agents
+const AGENTS=[
+  {id:'claude',name:'Claude Code',desc:"L'agent de terminal d'Anthropic : il planifie, modifie des fichiers et lance des commandes dans votre dépôt.",cmd:'setup-claude',base:'',doc:'#'},
+  {id:'codex',name:'Codex CLI',desc:"L'agent de terminal d'OpenAI, qui exécute d'abord votre tâche dans un bac à sable local.",cmd:'setup-codex',base:'/v1',doc:'#'},
+  {id:'cline',name:'Cline',desc:"Une extension VS Code qui vous fait valider chaque modification et chaque commande.",cmd:'setup-cline',base:'/v1',doc:'#'},
+  {id:'continue',name:'Continue',desc:"Une extension VS Code et JetBrains : autocomplétion en ligne et discussion au fil de la frappe.",cmd:'setup-continue',base:'/v1',doc:'#'},
+  {id:'aider',name:'Aider',desc:"Un binôme de programmation en ligne de commande qui transforme chaque changement en commit git.",cmd:'setup-aider',base:'/v1',doc:'#'},
+  {id:'opencode',name:'OpenCode',desc:"Un agent de terminal indépendant du fournisseur, avec une interface texte plein écran.",cmd:'setup-opencode',base:'/v1',doc:'#'},
+  {id:'goose',name:'Goose',desc:"L'agent local de Block, extensible par serveurs MCP pour aller au-delà du code.",cmd:'setup-goose',base:'/v1',doc:'#'},
+  {id:'qwen',name:'Qwen Code',desc:"Un fork de Gemini CLI réglé pour les modèles Qwen et les grands dépôts.",cmd:'setup-qwen',base:'/v1',doc:'#'},
+  {id:'roo',name:'Roo Code',desc:"Une extension VS Code avec des modes interchangeables : architecte, codeur, débogueur.",cmd:'setup-roo',base:'/v1',doc:'#'},
+  {id:'kilo',name:'Kilo Code',desc:"Une extension VS Code qui fusionne Roo et Cline, avec un orchestrateur qui découpe le travail.",cmd:'setup-kilo',base:'/v1',doc:'#'},
+  {id:'crush',name:'Crush',desc:"L'agent de terminal de Charm, écrit en Go, avec une session par projet.",cmd:'setup-crush',base:'/v1',doc:'#'},
+  {id:'dsh',name:'DeepSeek Harness',desc:"Le harnais de DeepSeek, qui garde chaque fournisseur comme une route commutable.",cmd:'setup-dsh',base:'/v1',doc:'#'},
+  {id:'mimo',name:'MiMo Code',desc:"L'agent de terminal de Xiaomi, un fork d'OpenCode qui accepte tout fournisseur compatible OpenAI.",cmd:'setup-mimo',base:'/v1',doc:'#'},
+  {id:'cursor',name:'Cursor',desc:"L'éditeur pensé pour l'IA ; il passe par le cloud de Cursor, il lui faut donc une URL publique.",cmd:'setup-cursor',base:'/v1',doc:'#',autoNote:"Affiche les étapes de configuration de cet outil ; aucun fichier n'est écrit."},
+  {id:'generic',name:'Generic OpenAI client',desc:"Tout autre outil qui parle l'API OpenAI, configuré à la main avec l'URL de base et la clé.",cmd:'setup-generic',base:'/v1',doc:'#',autoNote:"Affiche les étapes de configuration de cet outil ; aucun fichier n'est écrit."},
+];
+function copyText(t){ navigator.clipboard.writeText(t).then(()=>toast('Copié',true)).catch(()=>{ const ta=document.createElement('textarea'); ta.value=t; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('Copié',true); }); }
+function renderAgents(){
+  const host=location.origin; const baseHost=host.replace(':3001',':'+(location.port||'3001'));
+  const urlBase=baseHost; // same as server
+  document.getElementById('agents-url').textContent=urlBase;
+  document.getElementById('agents-quick').textContent=`npx freellmapi ${AGENTS[0].cmd} --url ${urlBase}`;
+  // unified key
+  let uk=(document.getElementById('unified')?.textContent||'')|| (document.getElementById('unified-badge')?.textContent||'');
+  // try to get real key from last /api/keys call
+  // will be updated in loadKeys
+  const masked=uk && uk.includes('…') ? uk : 'freellma••••••••••••0e97';
+  document.getElementById('agents-key').textContent=masked;
+  const fullKey=localStorage.getItem('freellm_token')||masked;
+  const list=document.getElementById('agents-list');
+  list.innerHTML=AGENTS.map(a=>`
+    <div class="card">
+      <div style="display:flex;gap:12px;align-items:start">
+        <div style="width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:grid;place-items:center;color:white;font-weight:800;font-size:12px;flex:0 0 auto">${a.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()}</div>
+        <div style="flex:1">
+          <div style="font-weight:800">${a.name}</div>
+          <div style="color:var(--muted);font-size:13px;margin-top:4px">${a.desc}</div>
+          <div style="margin-top:12px;padding:10px;border-radius:10px;background:#0b1222;border:1px solid #24324d">
+            <div style="font-size:11px;color:var(--muted);font-weight:700;letter-spacing:0.06em;text-transform:uppercase">Configuration automatique</div>
+            <div style="font-size:12px;color:var(--muted);margin-top:4px">${a.autoNote||"Écrit pour vous le fichier de configuration de cet outil, pointé vers cette passerelle."}</div>
+            <div class="row" style="margin-top:8px"><code class="kbd" style="flex:1;cursor:pointer" onclick="copyText(this.textContent)">npx freellmapi ${a.cmd} --url ${urlBase}</code><button class="ghost" onclick="copyText('npx freellmapi ${a.cmd} --url ${urlBase}')">Copier</button></div>
+          </div>
+          <div style="margin-top:10px;padding:10px;border-radius:10px;background:rgba(255,255,255,0.02);border:1px solid #24324d">
+            <div style="font-size:11px;color:var(--muted);font-weight:700;letter-spacing:0.06em;text-transform:uppercase">Connexion manuelle</div>
+            <div style="font-size:12px;color:var(--muted);margin-top:4px">URL de base et clé à saisir dans les réglages de l'outil.</div>
+            <div style="margin-top:8px;display:grid;gap:6px">
+              <div class="row"><span class="kbd">BASE_URL=${urlBase}${a.base}</span><button class="ghost" onclick="copyText('${urlBase}${a.base}')">Copier</button></div>
+              <div class="row"><span class="kbd">API_KEY=${fullKey.slice(0,18)}…</span><button class="ghost" onclick="copyText('${fullKey}')">Copier clé</button></div>
+            </div>
+          </div>
+          <div style="margin-top:8px"><a href="${a.doc}" style="font-size:12px;color:#a5b4fc">Documentation →</a></div>
+        </div>
+      </div>
+    </div>`).join('');
+}
+
+// init
+(async()=>{
+  // token bootstrap : si pas de token, tente unifiedKey via /api/keys sans auth (premier setup)
+  if(!token){
+    try{ const r=await fetch('/api/keys').then(r=>r.json()); if(r.unifiedKey) token=r.unifiedKey; }catch{}
+    if(!token){
+      try{
+        // crée un compte local silencieux (dashboard en local n'a pas de password)
+        const r=await fetch('/api/auth/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'local@py',password:'local12345'})}).then(r=>r.json());
+        if(r.token) token=r.token;
+      }catch{}
+    }
+    if(token) localStorage.setItem('freellm_token',token);
+  }
+  document.getElementById('chat-model').onchange=e=>{ document.getElementById('chat-meta').textContent=e.target.value; };
+  await refresh();
+})();
+
+async function refresh(){
+  try{ await fetch('/livez'); document.getElementById('api-state').textContent='en ligne'; document.getElementById('live-dot').style.color='#10b981'; }catch{ document.getElementById('api-state').textContent='hors ligne'; document.getElementById('live-dot').style.color='#ef4444'; }
+  renderAgents();
+  await loadProvidersMeta();
+  await Promise.all([loadKeys(),loadModels(),loadSettings(), (async()=>{
+    try{
+      const r=await apiAdmin('/analytics/summary?range=7d');
+      document.getElementById('s-models').textContent=(MODELS.length||'—');
+      document.getElementById('s-keys').textContent=(await apiAdmin('/keys').then(k=>k.keys?.length||0).catch(()=>0));
+      document.getElementById('s-req').textContent=r.totalRequests||0;
+      document.getElementById('s-ok').textContent=(r.successRate||0).toFixed(1)+'%';
+    }catch{}
+  })()]);
+  setTimeout(()=>{ try{ const uk=localStorage.getItem('freellm_token')||''; if(uk) document.getElementById('agents-key').textContent=uk.slice(0,8)+'••••••••••••'+uk.slice(-4); }catch{} },800);
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+# dependencies
+node_modules
+bun.lock
+
+# output
+out
+dist
+*.tgz
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+*.log
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# dotenv
+.env
+.env.*
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# IDEs
+.idea
+.vscode
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Real config (has secrets) — use config.example.json as template
+config.json
+
+# Generated plist (has local paths)
+com.smolclaw.daemon.plist

@@ -1,0 +1,10 @@
+# Direct dependencies for AgentOS phase 1.
+# smolagents is installed editable from the local checkout kept next to this file.
+-e ./smolagents-main/smolagents-main
+httpx
+ddgs
+python-telegram-bot
+pydantic
+pydantic-settings
+python-dotenv
+pytest
