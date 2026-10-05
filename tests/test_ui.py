@@ -93,15 +93,37 @@ def test_audit_endpoint_lists_auth_actions(settings, storage, notifier):
     server, runner = make_server(settings, storage, notifier)
     try:
         base = f"http://127.0.0.1:{server.port}"
-        auth_session(base)
-        listing = httpx.get(base + "/api/audit?limit=10", timeout=5)
+        headers = auth_session(base)
+        listing = httpx.get(base + "/api/audit?limit=10", headers=headers, timeout=5)
         assert listing.status_code == 200
         actions = [item["action"] for item in listing.json()["items"]]
         assert "auth.setup" in actions
         assert "auth.login" in actions
 
-        bad = httpx.get(base + "/api/audit?limit=abc", timeout=5)
+        bad = httpx.get(base + "/api/audit?limit=abc", headers=headers, timeout=5)
         assert bad.status_code == 400
+    finally:
+        server.stop()
+        runner.shutdown()
+
+
+def test_settings_page_uses_schema_and_js_ids_resolve(settings, storage, notifier):
+    import re
+
+    server, runner = make_server(settings, storage, notifier, with_services=False)
+    try:
+        base = f"http://127.0.0.1:{server.port}"
+        html = httpx.get(base + "/", timeout=5).text
+        assert 'id="set-schema"' in html
+        assert 'id="set-restart"' in html
+        assert 'id="set-free"' in html
+        assert 'id="fadd"' in html
+        assert 'data-page="general">Réglages</a>' in html
+        assert "loadSchemaSettings" in html
+        assert "/api/settings/schema" in html
+        # every element id referenced literally from JS must exist in the markup
+        for el_id in {m[1] for m in re.findall(r"\$\((['\"])([A-Za-z0-9_-]+)\1\)", html)}:
+            assert f'id="{el_id}"' in html, f"#{el_id} referenced by JS is missing"
     finally:
         server.stop()
         runner.shutdown()
@@ -111,8 +133,10 @@ def test_settings_endpoint_503_without_service(settings, storage, notifier):
     server, runner = make_server(settings, storage, notifier, with_services=False)
     try:
         base = f"http://127.0.0.1:{server.port}"
-        assert httpx.get(base + "/api/settings", timeout=5).status_code == 503
-        assert httpx.get(base + "/api/secrets", timeout=5).status_code == 503
+        headers = auth_session(base)
+        assert httpx.get(base + "/api/settings", headers=headers, timeout=5).status_code == 503
+        assert httpx.get(base + "/api/secrets", headers=headers, timeout=5).status_code == 503
+        assert httpx.get(base + "/api/settings", timeout=5).status_code == 401
     finally:
         server.stop()
         runner.shutdown()

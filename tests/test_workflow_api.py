@@ -88,7 +88,7 @@ def test_invalid_workflow_definitions_are_rejected(settings, storage, notifier):
         )
         assert dry.status_code == 400
 
-        listing = httpx.get(base + "/api/workflows", timeout=5)
+        listing = httpx.get(base + "/api/workflows", headers=headers, timeout=5)
         assert listing.status_code == 200
         assert listing.json()["items"] == []
         assert storage.list_workflows() == []
@@ -127,7 +127,9 @@ def test_create_dry_run_and_run_lifecycle(settings, storage, notifier):
         assert dry.status_code == 200, dry.text
         assert dry.json()["step_count"] == 2
         assert dry.json()["persisted"] is False
-        assert httpx.get(base + "/api/workflows", timeout=5).json()["items"] == []
+        assert httpx.get(
+            base + "/api/workflows", headers=headers, timeout=5
+        ).json()["items"] == []
 
         created = httpx.post(
             base + "/api/workflows",
@@ -139,7 +141,7 @@ def test_create_dry_run_and_run_lifecycle(settings, storage, notifier):
         assert created.json()["name"] == "demo"
         assert created.json()["step_count"] == 2
 
-        listing = httpx.get(base + "/api/workflows", timeout=5).json()
+        listing = httpx.get(base + "/api/workflows", headers=headers, timeout=5).json()
         assert [w["name"] for w in listing["items"]] == ["demo"]
         assert set(listing["items"][0]["steps"][0]) == {"name", "kind", "prompt"}
 
@@ -156,7 +158,7 @@ def test_create_dry_run_and_run_lifecycle(settings, storage, notifier):
         assert run["status"] == "SUCCESS"
         assert run["result"] == "result two"
 
-        runs = httpx.get(base + "/api/workflows?limit=5", timeout=5).json()["runs"]
+        runs = httpx.get(base + "/api/workflows?limit=5", headers=headers, timeout=5).json()["runs"]
         assert any(r["id"] == run_id and r["status"] == "SUCCESS" for r in runs)
 
         ghost = httpx.post(
@@ -264,7 +266,7 @@ def test_schedule_workflow_crud(settings, storage, notifier):
         )
         assert scheduled.status_code == 200, scheduled.text
 
-        jobs = httpx.get(base + "/api/workflows", timeout=5).json()["jobs"]
+        jobs = httpx.get(base + "/api/workflows", headers=headers, timeout=5).json()["jobs"]
         job = next(j for j in jobs if j["name"] == "demo_0800")
         assert job == {
             "name": "demo_0800",

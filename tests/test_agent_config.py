@@ -178,8 +178,9 @@ def test_agent_api_http(settings, storage, notifier):
     server, runner = make_server(settings, storage, notifier)
     try:
         base = f"http://127.0.0.1:{server.port}"
+        headers = auth_session(base)
 
-        info = httpx.get(base + "/api/agent", timeout=5)
+        info = httpx.get(base + "/api/agent", headers=headers, timeout=5)
         assert info.status_code == 200
         data = info.json()
         assert data["settings"]["max_steps"] == settings.agent_max_steps
@@ -193,7 +194,6 @@ def test_agent_api_http(settings, storage, notifier):
         )
         assert denied.status_code == 401
 
-        headers = auth_session(base)
         saved = httpx.post(
             base + "/api/agent",
             json={"max_steps": 5, "dry_run": True, "tools": ["web_search"]},
@@ -211,7 +211,7 @@ def test_agent_api_http(settings, storage, notifier):
         )
         assert invalid.status_code == 400
 
-        again = httpx.get(base + "/api/agent", timeout=5)
+        again = httpx.get(base + "/api/agent", headers=headers, timeout=5)
         assert again.json()["settings"]["max_steps"] == 5
         assert again.json()["settings"]["dry_run"] is True
 

@@ -144,7 +144,7 @@ def test_permissions_are_served_and_immutable(settings, storage, notifier):
         )
         assert tampered.status_code == 200, tampered.text
 
-        info = httpx.get(base + "/api/agent", timeout=5).json()
+        info = httpx.get(base + "/api/agent", headers=headers, timeout=5).json()
         assert info["settings"]["tools"] == ["web_search"]
         assert "evil_tool" not in info["available_tools"]
         assert set(info["settings"]["tools"]) <= set(ALLOWED_TOOL_NAMES)
@@ -170,7 +170,7 @@ def test_secret_rotation(settings, storage, notifier):
         assert "ghp_super_secret_value" not in rotated.text
         assert secret_store.has("GITHUB_TOKEN")
 
-        listing = httpx.get(base + "/api/secrets", timeout=5).json()
+        listing = httpx.get(base + "/api/secrets", headers=headers, timeout=5).json()
         item = next(i for i in listing["items"] if i["key"] == "GITHUB_TOKEN")
         assert item["status"].startswith("Configured (ends ...")
 

@@ -267,17 +267,12 @@ Implemented commands:
 | `/status` | Agent, database, and endpoint health |
 | `/ask <mission>` | Submit a mission to the agent |
 | `/tasks` | List recent tasks with their states |
+| `/task <id>` | Show one task: status, dates, prompt, result, redacted error |
+| `/memory <query>` | Search persistent memory (top 5 matches) |
+| `/workflows` | Definitions, recent runs and cron jobs |
 | `/cancel <id>` | Cancel a running or pending task |
 | `/approve <id>` | Approve a pending confirmation (publication, workflow step) |
 | `/reject <id>` | Reject a confirmation, cancelling the parked task |
-
-Planned commands:
-
-```text
-/task <id>
-/memory <query>
-/workflows
-```
 
 Examples:
 
@@ -305,38 +300,45 @@ Pages:
 
 | Page | What it does |
 |---|---|
-| Dashboard | health, task counts, endpoint states |
-| Tasks / Incidents / Memory | read-only views over the local API |
-| Settings | key/value settings (`SettingsService`, audit-logged) |
+| Dashboard | health, task counts, endpoint states, **new mission form**, task list + detail view |
+| Réglages (Settings) | **schema-driven settings** by category (type/range/choice validated server-side, “modifié” badge, applied at next restart), custom key/value settings, audit-logged |
+| Tasks / Incidents / Memory | views + task detail (`GET /api/tasks/<id>`), memory add/delete, incidents clear |
 | LLM endpoints | CRUD on the ordered endpoint list + test, reload of the router |
 | Secrets | list (masked), set, delete, rotate — write-only, `ADMIN_PASSWORD_HASH` excluded |
 | Agent | prompt, max steps, temperature, dry-run, tool selection, backend |
-| Workflows | definitions, JSON editor + dry-run, runs, cancel, cron schedule/delete |
-| Social | drafts, calendar, adapters + connection tests |
+| Workflows | definitions, JSON editor + dry-run, run/delete, runs, cancel, cron schedule/delete |
+| Social | manual draft creation, drafts, calendar, adapters + connection tests |
 | Security | active sessions (revoke), tool allow-list, dry-run blocked tools, audit log |
 | Integrations | secrets + real connection tests (Telegram, DDGS, SMTP, GitHub) |
+| Journaux (Logs) | incidents list + clear |
 
 Security model of the Admin API:
 
 - every `POST` requires a valid session cookie **and** an `X-CSRF-Token` header (fail-closed), except `setup`, `login`, `logout`;
-- `GET /api/security` additionally requires a valid session (reads are otherwise local-only: the server binds to `127.0.0.1`);
+- every `GET /api/*` requires a valid session cookie as well (no CSRF needed for reads); `/health` and `/api/status` stay open as the redacted supervision surface;
+- foreign `Host` headers are refused with `403 bad_host` (DNS-rebinding protection on both GET and POST);
 - request bodies are closed schemas (`extra="forbid"`, ≤16 Ko) and unknown fields return `400`;
-- all exceptions are redacted (`redact`) before leaving the process; audit trail in the `audit_log` table (`settings.*`, `secret.*`, `llm.*`, `agent.update`, `workflow.*`, `social.test`, `integration.test`, `auth.*`);
+- all exceptions are redacted (`redact`) before leaving the process; audit trail in the `audit_log` table (`settings.*`, `secret.*`, `llm.*`, `agent.update`, `workflow.*`, `task.submit`, `memory.*`, `draft.create`, `incidents.clear`, `social.test`, `integration.test`, `auth.*`);
 - secrets are write-only: responses show only `Configured (ends ...xxxx)`.
 
 Endpoints (summary):
 
 ```text
-GET  /api/session | /api/settings | /api/llm/endpoints | /api/secrets | /api/audit
-     /api/agent | /api/workflows | /api/social | /api/security | /api/integrations
-     /api/tasks | /api/incidents | /api/memory | /api/drafts | /api/confirmations
+GET  /api/session | /api/settings | /api/settings/schema | /api/llm/endpoints
+     /api/secrets | /api/audit | /api/agent | /api/workflows | /api/social
+     /api/security | /api/integrations | /api/tasks | /api/tasks/<id>
+     /api/incidents | /api/memory | /api/drafts | /api/confirmations
 POST /api/setup | /api/login | /api/logout
      /api/settings(/delete) | /api/llm/endpoints(/update|/delete|/test) | /api/llm/reload
      /api/secrets/set | /api/secrets/delete | /api/secrets/rotate
-     /api/agent | /api/workflows(/dry_run|/run|/cancel|/schedule|/schedule/delete)
+     /api/agent | /api/workflows(/dry_run|/run|/cancel|/delete|/schedule|/schedule/delete)
+     /api/tasks/submit | /api/memory/add | /api/memory/delete
+     /api/drafts/create | /api/incidents/clear
      /api/social/test | /api/integrations/test | /api/security/sessions/revoke
      /api/tasks/<id>/cancel | /api/confirmations/<id>/approve|reject
 ```
+
+The `GET /api/settings/schema` endpoint exposes the typed settings schema (category, label, type, range, choices, default, stored override, restart flag) that drives the Réglages page; values stored in the `settings` table are merged onto the runtime `Settings` object at boot (`apply_db_settings`), so edits carry a restart badge.
 
 Integration connection tests (`POST /api/integrations/test`) perform genuine read-only handshakes — Telegram `getMe`, GitHub `/user`, SMTP `ehlo`+`login` (no mail sent), one DDGS query — never printing credential values.
 
@@ -424,6 +426,7 @@ Admin API controls:
 - first-run password setup, PBKDF2-SHA256 (150 000 iterations), login rate-limiting;
 - session cookies hashed (SHA-256) with expiry, revocable from the Security page;
 - CSRF token required on every state-changing request (fail-closed);
+- session cookie required on every `GET /api/*` route (only `/health` and `/api/status` stay open), and any foreign `Host` header is refused (anti DNS-rebinding);
 - the agent tool allow-list (`ALLOWED_TOOL_NAMES`) is immutable through the API — a forged `agent.tools` payload is ignored at `effective()`;
 - tools flagged as dry-run blocked still refuse irreversible actions even when dry-run mode is off;
 - rotating or reading `ADMIN_PASSWORD_HASH` through the API is refused.
@@ -485,7 +488,7 @@ cp .env.example .env               # then edit .env
 python scripts/check_env.py
 
 # 5. Run the test suite and the linter
-python -m pytest                   # 170 tests, no network, no API keys
+ python -m pytest                   # 184 tests, no network, no API keys
 python -m ruff check . tests scripts
 
 # 6. Start AgentOS
@@ -617,7 +620,7 @@ tenacity        retry helpers (V2)
 │   ├── check_env.py            environment verification
 │   └── run.sh                  process supervision helper
 │
-├── tests/                      170 unit tests (mocked network)
+├── tests/                      184 unit tests (mocked network)
 │
 ├── storage/                    runtime data (git-ignored)
 │

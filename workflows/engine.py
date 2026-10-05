@@ -335,8 +335,10 @@ class WorkflowEngine:
                     )
             return
         self.storage.update_step(step["id"], status="PENDING", result=None)
-        self.storage.update_run(run_id, status=TaskStatus.WAITING_CONFIRMATION.value)
+        # Create the confirmation BEFORE flipping the run status: readers that
+        # observe WAITING_CONFIRMATION are then guaranteed to find it.
         confirmation_id = self.storage.create_confirmation("workflow_run", payload)
+        self.storage.update_run(run_id, status=TaskStatus.WAITING_CONFIRMATION.value)
         label = step_def.get("name") or f"step {position}"
         prompt = step_def.get("prompt") or "Proceed?"
         self.runner.notify(

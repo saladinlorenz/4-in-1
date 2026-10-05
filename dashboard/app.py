@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 from agent.permissions import ALLOWED_TOOL_NAMES
 from config.logging import redact
+from services import describe_schema, validate_setting
 from workflows.validation import NAME_RE, parse_run, parse_schedule, parse_workflow
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ GET_ROUTES = {
     "/api/drafts",
     "/api/confirmations",
     "/api/settings",
+    "/api/settings/schema",
     "/api/llm/endpoints",
     "/api/secrets",
     "/api/audit",
@@ -40,9 +42,10 @@ GET_ROUTES = {
     "/api/integrations",
 }
 
-# GET routes that expose security-sensitive state: a valid session cookie is
-# required (no CSRF needed for reads).
-PROTECTED_GET = {"/api/security"}
+# GET routes that expose state: a valid session cookie is required (no CSRF
+# needed for reads). /health and /api/status stay open as the supervision
+# surface (redacted, minimal).
+PROTECTED_GET = GET_ROUTES - {"/health", "/api/status"}
 
 DECISIONS = {"approve": "APPROVED", "reject": "REJECTED"}
 
@@ -62,6 +65,11 @@ KNOWN_SECRETS = [
 ]
 
 POST_ACTIONS = {
+    "/api/tasks/submit": "task_submit",
+    "/api/memory/add": "memory_add",
+    "/api/memory/delete": "memory_delete",
+    "/api/drafts/create": "draft_create",
+    "/api/incidents/clear": "incidents_clear",
     "/api/settings": "settings_set",
     "/api/settings/delete": "settings_delete",
     "/api/llm/endpoints": "llm_create",
@@ -77,6 +85,7 @@ POST_ACTIONS = {
     "/api/workflows/dry_run": "workflow_dry_run",
     "/api/workflows/run": "workflow_run",
     "/api/workflows/cancel": "workflow_cancel",
+    "/api/workflows/delete": "workflow_delete",
     "/api/workflows/schedule": "workflow_schedule",
     "/api/workflows/schedule/delete": "workflow_schedule_delete",
     "/api/social/test": "social_test",
@@ -149,6 +158,7 @@ class LocalApi:
         social: Any | None = None,
         auth: Any | None = None,
         integrations: Any | None = None,
+        app_settings: Any | None = None,
     ) -> None:
         self.runner = runner
         self.storage = storage
@@ -161,6 +171,7 @@ class LocalApi:
         self.social = social
         self.auth = auth
         self.integrations = integrations
+        self.app_settings = app_settings
 
     def _require(self, service: Any) -> Any:
         if service is None:
@@ -196,6 +207,16 @@ class LocalApi:
         service = self._require(self.settings_service)
         category = (query.get("category") or [""])[0].strip() or None
         return {"items": service.list(category)}
+
+    def settings_schema(self, query: dict[str, list[str]]) -> dict[str, Any]:
+        service = self._require(self.settings_service)
+        app_settings = self._require(self.app_settings)
+        rows = describe_schema(service, app_settings)
+        store = self.secret_store
+        for row in rows:
+            if row["secret"] and store is not None:
+                row["status"] = store.mask(row["key"]) or "absent"
+        return {"items": rows}
 
     def audit(self, query: dict[str, list[str]]) -> dict[str, Any]:
         return {"items": self.storage.recent_audit(limit=_query_limit(query, 25))}
@@ -289,11 +310,13 @@ class LocalApi:
 
     def settings_set(self, body: dict[str, Any]) -> dict[str, Any]:
         service = self._require(self.settings_service)
-        service.set(
-            str(body.get("key", "")),
-            body.get("value"),
-            category=str(body.get("category", "general")),
-        )
+        key = str(body.get("key", ""))
+        value = body.get("value")
+        category = str(body.get("category", "general"))
+        checked = validate_setting(key, value)
+        if checked is not None:
+            value, category = checked
+        service.set(key, value, category=category)
         return {"ok": True}
 
     def settings_delete(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -383,6 +406,14 @@ class LocalApi:
             self.storage.add_audit("dashboard", "workflow.cancel", f"run={run_id}")
         return {"ok": ok, "reason": reason}
 
+    def workflow_delete(self, body: dict[str, Any]) -> dict[str, Any]:
+        self._closed(body, {"name"})
+        name = self._text(body, "name", limit=64)
+        ok = self.storage.delete_workflow(name)
+        if ok:
+            self.storage.add_audit("dashboard", "workflow.delete", f"name={name}")
+        return {"ok": ok}
+
     def workflow_schedule(self, body: dict[str, Any]) -> dict[str, Any]:
         scheduler = self._require(self.scheduler)
         request = parse_schedule(body)
@@ -466,6 +497,74 @@ class LocalApi:
         self.storage.add_audit("dashboard", "integration.test", f"kind={kind}")
         return {"ok": True, "detail": detail}
 
+    # --- console actions ----------------------------------------------------
+
+    @staticmethod
+    def _closed(body: dict[str, Any], allowed: set[str]) -> None:
+        extra = set(body) - allowed
+        if extra:
+            raise ValueError(f"unknown fields: {', '.join(sorted(extra))}")
+
+    @staticmethod
+    def _text(body: dict[str, Any], field: str, *, limit: int) -> str:
+        value = str(body.get(field, "")).strip()
+        if not value:
+            raise ValueError(f"{field} is required")
+        if len(value) > limit:
+            raise ValueError(f"{field} must be at most {limit} chars")
+        return value
+
+    def task_submit(self, body: dict[str, Any]) -> dict[str, Any]:
+        self._closed(body, {"prompt"})
+        prompt = self._text(body, "prompt", limit=4000)
+        task_id = self.runner.submit(prompt, kind="chat")
+        self.storage.add_audit("dashboard", "task.submit", f"task_id={task_id}")
+        return {"ok": True, "task_id": task_id}
+
+    def task_detail(self, task_id: int) -> dict[str, Any]:
+        task = self.storage.get_task(task_id)
+        if task is None:
+            raise ValueError("task not found")
+        if task.get("error"):
+            task["error"] = redact(str(task["error"]))[:500]
+        return {"item": task}
+
+    def memory_add(self, body: dict[str, Any]) -> dict[str, Any]:
+        self._closed(body, {"text"})
+        text = self._text(body, "text", limit=2000)
+        fact_id = self.storage.remember(text, source="web")
+        self.storage.add_audit("dashboard", "memory.add", f"fact_id={fact_id}")
+        return {"ok": True, "id": fact_id}
+
+    def memory_delete(self, body: dict[str, Any]) -> dict[str, Any]:
+        self._closed(body, {"id"})
+        fact_id = _body_id(body, "id")
+        ok = self.storage.delete_fact(fact_id)
+        if ok:
+            self.storage.add_audit("dashboard", "memory.delete", f"fact_id={fact_id}")
+        return {"ok": ok}
+
+    def draft_create(self, body: dict[str, Any]) -> dict[str, Any]:
+        self._closed(body, {"platform", "content", "scheduled_for"})
+        platform = self._text(body, "platform", limit=32).lower()
+        if not all(char.isalnum() or char in "-_" for char in platform):
+            raise ValueError("platform must contain only letters, digits, - or _")
+        content = self._text(body, "content", limit=5000)
+        scheduled = body.get("scheduled_for")
+        if scheduled is not None:
+            scheduled = str(scheduled).strip() or None
+        if scheduled is not None and len(scheduled) > 64:
+            raise ValueError("scheduled_for must be at most 64 chars")
+        draft_id = self.storage.create_draft(platform, content, scheduled)
+        self.storage.add_audit("dashboard", "draft.create", f"draft_id={draft_id}")
+        return {"ok": True, "id": draft_id}
+
+    def incidents_clear(self, body: dict[str, Any]) -> dict[str, Any]:
+        self._closed(body, set())
+        deleted = self.storage.clear_incidents()
+        self.storage.add_audit("dashboard", "incidents.clear", f"deleted={deleted}")
+        return {"ok": True, "deleted": deleted}
+
 
 def _make_handler(
     snapshot: Callable[[], dict[str, Any]],
@@ -478,6 +577,9 @@ def _make_handler(
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             path = parsed.path
+            if not self._host_allowed():
+                self._send(403, {"error": "bad_host"})
+                return
             if path in ("/", "/index.html"):
                 self._serve_index()
                 return
@@ -496,11 +598,24 @@ def _make_handler(
             if api is None:
                 self._send(404, {"error": "not_found"})
                 return
-            if path in PROTECTED_GET:
+            if path in PROTECTED_GET or path.startswith("/api/tasks/"):
                 session = None if auth is None else auth.session_valid(self._session_token())
                 if session is None:
                     self._send(401, {"error": "unauthorized"})
                     return
+            segments = [part for part in path.split("/") if part]
+            if len(segments) == 3 and segments[0] == "api" and segments[1] == "tasks":
+                try:
+                    task_id = _path_id(segments, 2)
+                    payload = api.task_detail(task_id)
+                except ValueError as exc:
+                    self._send(400, {"error": str(exc)[:300]})
+                except Exception as exc:
+                    logger.warning("GET %s failed: %s", path, redact(str(exc)))
+                    self._send(503, {"error": "unavailable"})
+                else:
+                    self._send(200, payload)
+                return
             routes = {
                 "/api/tasks": api.tasks,
                 "/api/incidents": api.incidents,
@@ -508,6 +623,7 @@ def _make_handler(
                 "/api/drafts": api.drafts,
                 "/api/confirmations": api.confirmations,
                 "/api/settings": api.settings_list,
+                "/api/settings/schema": api.settings_schema,
                 "/api/llm/endpoints": api.llm_list,
                 "/api/secrets": api.secrets_list,
                 "/api/audit": api.audit,
@@ -567,6 +683,9 @@ def _make_handler(
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
             path = parsed.path
+            if not self._host_allowed():
+                self._send(403, {"error": "bad_host"})
+                return
             if api is None:
                 self._send(404, {"error": "not_found"})
                 return
@@ -642,6 +761,19 @@ def _make_handler(
 
         def _client_ip(self) -> str:
             return str(self.client_address[0]) if self.client_address else "unknown"
+
+        def _host_allowed(self) -> bool:
+            """Local-only surface: reject foreign Host headers (DNS rebinding)."""
+            host = (self.headers.get("Host") or "").strip().lower()
+            if not host:
+                return True
+            if host.startswith("["):
+                close = host.find("]")
+                name = host[1:close] if close > 1 else ""
+            else:
+                head, sep, tail = host.rpartition(":")
+                name = head if sep and tail.isdigit() else host
+            return name in {"127.0.0.1", "localhost", "::1"}
 
         def _session_token(self) -> str | None:
             cookie = self.headers.get("Cookie", "")

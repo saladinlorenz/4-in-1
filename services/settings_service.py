@@ -11,6 +11,10 @@ CATEGORIES = {
     "security",
     "integrations",
     "workflows",
+    "telegram",
+    "scheduler",
+    "limits",
+    "health",
 }
 
 MAX_VALUE_CHARS = 4096

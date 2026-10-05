@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import time
+import urllib.error
+import urllib.request
 
 import httpx
 
@@ -72,25 +74,28 @@ def test_get_api_routes_return_items(settings, storage, notifier):
     server, runner = make_server(settings, storage, notifier)
     try:
         base = f"http://127.0.0.1:{server.port}"
+        headers = auth_session(base)
 
-        tasks = httpx.get(base + "/api/tasks", timeout=5)
+        tasks = httpx.get(base + "/api/tasks", headers=headers, timeout=5)
         assert tasks.status_code == 200
         assert len(tasks.json()["items"]) == 1
         assert tasks.json()["items"][0]["prompt"] == "first task"
 
-        incidents = httpx.get(base + "/api/incidents", timeout=5)
+        incidents = httpx.get(base + "/api/incidents", headers=headers, timeout=5)
         assert incidents.json()["items"][0]["source"] == "test"
 
-        memory = httpx.get(base + "/api/memory", timeout=5)
+        memory = httpx.get(base + "/api/memory", headers=headers, timeout=5)
         assert memory.json()["items"][0]["text"] == "fact one"
 
-        drafts = httpx.get(base + "/api/drafts?status=DRAFT", timeout=5)
+        drafts = httpx.get(base + "/api/drafts?status=DRAFT", headers=headers, timeout=5)
         assert drafts.json()["items"][0]["status"] == "DRAFT"
 
-        confirmations = httpx.get(base + "/api/confirmations?status=PENDING", timeout=5)
+        confirmations = httpx.get(
+            base + "/api/confirmations?status=PENDING", headers=headers, timeout=5
+        )
         assert confirmations.json()["items"][0]["kind"] == "publish_draft"
 
-        empty = httpx.get(base + "/api/drafts?status=PUBLISHED", timeout=5)
+        empty = httpx.get(base + "/api/drafts?status=PUBLISHED", headers=headers, timeout=5)
         assert empty.json()["items"] == []
     finally:
         server.stop()
@@ -101,10 +106,49 @@ def test_get_api_validates_limit(settings, storage, notifier):
     server, runner = make_server(settings, storage, notifier)
     try:
         base = f"http://127.0.0.1:{server.port}"
-        assert httpx.get(base + "/api/tasks?limit=abc", timeout=5).status_code == 400
-        assert httpx.get(base + "/api/tasks?limit=0", timeout=5).status_code == 400
-        ok = httpx.get(base + "/api/tasks?limit=999", timeout=5)
+        headers = auth_session(base)
+        assert (
+            httpx.get(base + "/api/tasks?limit=abc", headers=headers, timeout=5).status_code
+            == 400
+        )
+        assert (
+            httpx.get(base + "/api/tasks?limit=0", headers=headers, timeout=5).status_code
+            == 400
+        )
+        ok = httpx.get(base + "/api/tasks?limit=999", headers=headers, timeout=5)
         assert ok.status_code == 200
+    finally:
+        server.stop()
+        runner.shutdown()
+
+
+def test_get_api_requires_session_and_local_host(settings, storage, notifier):
+    storage.create_task("private task")
+    server, runner = make_server(settings, storage, notifier)
+    try:
+        base = f"http://127.0.0.1:{server.port}"
+
+        for path in ("/api/tasks", "/api/secrets", "/api/settings", "/api/audit"):
+            denied = httpx.get(base + path, timeout=5)
+            assert denied.status_code == 401, f"{path} -> {denied.status_code}"
+
+        headers = auth_session(base)
+        assert httpx.get(base + "/api/tasks", headers=headers, timeout=5).status_code == 200
+
+        # supervision surface stays open (no session)
+        assert httpx.get(base + "/health", timeout=5).status_code == 200
+        assert httpx.get(base + "/api/status", timeout=5).status_code == 200
+
+        # DNS-rebinding protection: a foreign Host header is refused
+        request = urllib.request.Request(base + "/api/tasks", headers=headers)
+        request.add_unredirected_header("Host", "attacker.example")
+        try:
+            urllib.request.urlopen(request, timeout=5)
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 403
+            assert b"bad_host" in exc.read()
+        else:
+            raise AssertionError("foreign Host header must be refused")
     finally:
         server.stop()
         runner.shutdown()

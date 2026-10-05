@@ -18,6 +18,7 @@ from services import (
     IntegrationTester,
     LLMConfigService,
     SettingsService,
+    apply_db_settings,
 )
 from social import BlueskyAdapter, DevtoAdapter, SocialService, TelegramAdapter
 from telegram_bot import LogNotifier, TelegramNotifier, build_application, register_handlers
@@ -106,6 +107,7 @@ async def run(settings: Settings) -> None:
             social=social,
             auth=admin_auth,
             integrations=integrations,
+            app_settings=settings,
         ),
         auth=admin_auth,
     )
@@ -201,7 +203,16 @@ async def run(settings: Settings) -> None:
 
 def main() -> int:
     settings = load_settings()
+    settings.ensure_dirs()
+    boot_storage = Storage(settings.db_path)
+    boot_storage.init_schema()
+    applied, warnings = apply_db_settings(boot_storage, settings)
+    boot_storage.close()
     setup_logging(settings.log_level, settings.logs_dir)
+    for warning in warnings:
+        logger.warning("settings override skipped: %s", warning)
+    if applied:
+        logger.info("settings overrides applied at boot: %s", ", ".join(applied))
     if not settings.telegram_bot_token:
         logger.warning("TELEGRAM_BOT_TOKEN missing: /ask and notifications are unavailable")
     try:

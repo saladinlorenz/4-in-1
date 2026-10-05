@@ -76,7 +76,7 @@ button:disabled{opacity:.5;cursor:default}
     <nav id="nav">
       <a href="#/overview" data-page="overview">Vue d'ensemble</a>
       <a href="#/models" data-page="models">Modèles</a>
-      <a href="#/general" data-page="general">Général</a>
+      <a href="#/general" data-page="general">Réglages</a>
       <a href="#/agent" data-page="agent">Agent</a>
       <a href="#/integrations" data-page="integrations">Intégrations</a>
       <a href="#/social" data-page="social">Réseaux sociaux</a>
@@ -96,6 +96,17 @@ button:disabled{opacity:.5;cursor:default}
     <section id="page-overview" class="page hidden">
       <h1>Vue d'ensemble</h1>
       <div class="grid c3" id="ov-cards"></div>
+      <div class="card">
+        <h2>Nouvelle mission</h2>
+        <p class="muted">Même chemin que la commande <span class="mono">/ask</span> : whitelist d'outils, dry-run et confirmations s'appliquent.</p>
+        <textarea id="mission-prompt" placeholder="Ex. Résume les incidents des dernières 24 h."></textarea>
+        <div class="row" style="margin-top:10px"><button id="mission-go">Lancer la mission</button></div>
+      </div>
+      <div class="card">
+        <h2>Tâches</h2>
+        <div id="ov-tasks"></div>
+        <div id="task-detail" class="hidden" style="margin-top:12px"></div>
+      </div>
       <div class="card"><h2>Endpoints LLM</h2><div id="ov-llm"></div></div>
       <div class="card"><h2>Derniers incidents</h2><div id="ov-incidents"></div></div>
     </section>
@@ -138,8 +149,24 @@ button:disabled{opacity:.5;cursor:default}
     </section>
 
     <section id="page-general" class="page hidden">
-      <h1>Réglages généraux</h1>
-      <div class="card"><div id="set-general"></div></div>
+      <h1>Réglages</h1>
+      <p class="muted">Tout est modifiable ici. Les réglages s'appliquent au prochain démarrage du serveur ; les secrets sont pris en compte immédiatement.</p>
+      <p class="muted hidden" id="set-restart"></p>
+      <div id="set-schema"></div>
+      <div class="card">
+        <h2>Clés personnalisées</h2>
+        <p class="muted">Réglages hors schéma stockés en table <span class="mono">settings</span> (JSON brut).</p>
+        <div id="set-free"></div>
+        <div class="grid c3" style="margin-top:12px">
+          <div><label>Clé</label><input id="fkey" placeholder="ex. instance_name"></div>
+          <div><label>Catégorie</label><select id="fcat">
+            <option>general</option><option>agent</option><option>models</option><option>social</option>
+            <option>security</option><option>integrations</option><option>workflows</option>
+          </select></div>
+          <div><label>Valeur (texte ou JSON)</label><input id="fval" placeholder="12"></div>
+        </div>
+        <div class="row" style="margin-top:10px"><button id="fadd">Ajouter</button></div>
+      </div>
     </section>
 
     <section id="page-agent" class="page hidden">
@@ -170,6 +197,17 @@ button:disabled{opacity:.5;cursor:default}
         <h2>Adaptateurs</h2>
         <p class="muted">Publication réelle uniquement après confirmation humaine (jamais simulée). « Tester » vérifie la connexion sans rien publier. Clés : <span class="mono">DEVTO_API_KEY</span>, <span class="mono">BLUESKY_HANDLE</span> + <span class="mono">BLUESKY_APP_PASSWORD</span> (page Intégrations).</p>
         <div id="social-adapters"></div>
+      </div>
+      <div class="card">
+        <h2>Nouveau brouillon</h2>
+        <p class="muted">Création manuelle uniquement : la publication réelle passe toujours par l'agent + confirmation humaine (jamais simulée).</p>
+        <div class="grid c3">
+          <div><label>Plateforme</label><input id="dr-platform" placeholder="devto"></div>
+          <div><label>Planifié (ISO 8601, optionnel)</label><input id="dr-scheduled" placeholder="2026-10-06T09:00:00"></div>
+          <div style="align-self:end"><button id="dr-create">Créer le brouillon</button></div>
+        </div>
+        <label>Contenu</label>
+        <textarea id="dr-content" placeholder="Texte du post…"></textarea>
       </div>
       <div class="card">
         <h2>Brouillons &amp; calendrier</h2>
@@ -272,12 +310,24 @@ button:disabled{opacity:.5;cursor:default}
 
     <section id="page-memory" class="page hidden">
       <h1>Mémoire</h1>
+      <div class="card">
+        <h2>Ajouter un fait</h2>
+        <p class="muted">Stocké en table <span class="mono">memory</span> — relu par l'agent à chaque tâche (recherche sémantique/par mots-clés).</p>
+        <textarea id="mem-input" placeholder="Ex. Préfère les réponses courtes."></textarea>
+        <div class="row" style="margin-top:10px"><button id="mem-add">Mémoriser</button></div>
+      </div>
       <div class="card"><div id="mem-list"></div></div>
     </section>
 
     <section id="page-logs" class="page hidden">
       <h1>Journaux &amp; incidents</h1>
-      <div class="card"><div id="log-list"></div></div>
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <h2 style="margin:0">Incidents</h2>
+          <button class="danger small" id="logs-clear">Tout effacer</button>
+        </div>
+        <div id="log-list" style="margin-top:8px"></div>
+      </div>
     </section>
   </main>
 </div>
@@ -374,7 +424,7 @@ $("logout-btn").onclick = async () => {
 
 /* ---------- routing ---------- */
 const loaders = {
-  overview: loadOverview, models: loadModels, general: () => loadSettings("general", "set-general"),
+  overview: loadOverview, models: loadModels, general: loadSettingsPage,
   agent: loadAgent, social: loadSocial,
   integrations: loadIntegrations, security: loadSecurity, workflows: loadWorkflows,
   memory: loadMemory, logs: loadLogs,
@@ -429,6 +479,43 @@ async function loadOverview() {
   $("ov-incidents").innerHTML = table(
     ["Quand", "Type", "Message"],
     (inc.items || []).map((i) => [esc(i.created_at), esc(i.kind || i.type || ""), esc(i.message || i.detail || "")]));
+
+  const tasks = await api("GET", "/api/tasks?limit=10");
+  $("ov-tasks").innerHTML = table(
+    ["#", "Statut", "Créé", ""],
+    (tasks.items || []).map((t) => [
+      t.id,
+      t.status === "SUCCESS" ? '<span class="badge ok">SUCCESS</span>'
+        : t.status === "FAILED" ? '<span class="badge err">FAILED</span>'
+        : t.status === "CANCELLED" ? '<span class="badge err">CANCELLED</span>'
+        : '<span class="badge">' + esc(t.status) + "</span>",
+      esc(t.created_at),
+      "<button class='small sec' data-task='" + t.id + "'>Détail</button>",
+    ]));
+  $("ov-tasks").querySelectorAll("button[data-task]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        const detail = await api("GET", "/api/tasks/" + btn.dataset.task);
+        const t = detail.item || {};
+        const box = $("task-detail");
+        box.classList.remove("hidden");
+        box.innerHTML =
+          '<div class="card" style="margin:0"><div class="row" style="justify-content:space-between">' +
+          '<h2 style="margin:0">Tâche #' + t.id + ' <span class="badge">' + esc(t.status) + "</span></h2>" +
+          '<button class="small sec close-detail">Fermer</button></div>' +
+          '<div class="kv" style="margin-top:8px">' +
+          "<div>Créée</div><div>" + esc(t.created_at) + "</div>" +
+          "<div>Démarrée</div><div>" + esc(t.started_at || "—") + "</div>" +
+          "<div>Terminée</div><div>" + esc(t.finished_at || "—") + "</div>" +
+          "<div>Prompt</div><div>" + esc(t.prompt) + "</div>" +
+          "<div>Résultat</div><div>" + esc(t.result || "—") + "</div>" +
+          (t.error ? "<div>Erreur</div><div>" + esc(t.error) + "</div>" : "") +
+          "<div>Annulation</div><div>" + (t.cancel_requested ? "demandée" : "—") + "</div>" +
+          "</div></div>";
+        box.querySelector(".close-detail").onclick = () => box.classList.add("hidden");
+      } catch (err) { toast(err.message, true); }
+    };
+  });
 }
 
 /* ---------- settings pages ---------- */
@@ -472,6 +559,144 @@ async function loadSettings(category, containerId) {
     try { await api("POST", "/api/settings", { key, value, category }); toast("Réglage ajouté"); loadSettings(category, containerId); }
     catch (err) { toast(err.message, true); }
   };
+}
+
+/* ---------- schema-driven settings ---------- */
+const SET_CATS = {
+  general: "Général",
+  telegram: "Telegram",
+  scheduler: "Planification",
+  limits: "Limites",
+  models: "Modèles / LLM",
+  workflows: "Workflows",
+  health: "Serveur local",
+};
+let schemaRows = [];
+
+function setFieldInput(row) {
+  const v = row.value;
+  const attr = `data-key="${row.key}" class="set-input"`;
+  if (row.type === "bool") {
+    return `<select ${attr}><option value="true"${v === true ? " selected" : ""}>oui</option>` +
+      `<option value="false"${v === false ? " selected" : ""}>non</option></select>`;
+  }
+  if (row.type === "choice") {
+    return `<select ${attr}>` + row.choices.map((c) =>
+      `<option value="${esc(c)}"${v === c ? " selected" : ""}>${esc(c)}</option>`).join("") + "</select>";
+  }
+  if (row.type === "int" || row.type === "float") {
+    const bounds = (row.min != null ? ` min="${row.min}"` : "") + (row.max != null ? ` max="${row.max}"` : "");
+    return `<input type="number" step="${row.type === "float" ? "0.1" : "1"}"${bounds} ${attr} value="${esc(v ?? "")}">`;
+  }
+  if (row.type === "list[int]") {
+    return `<input type="text" ${attr} value="${esc((v || []).join(", "))}" placeholder="vide = bot inerte">`;
+  }
+  return `<input type="text"${row.max ? ` maxlength="${row.max}"` : ""} ${attr} value="${esc(v ?? "")}">`;
+}
+
+function setFieldHtml(row) {
+  const label = esc(row.label) +
+    (row.override ? ' <span class="badge warn">modifié</span>' : "");
+  const help = row.help ? `<div class="muted" style="font-size:11px">${esc(row.help)}</div>` : "";
+  if (row.type === "secret") {
+    const ok = row.status && row.status !== "absent";
+    return `<div><label>${label} <span class="badge${ok ? " ok" : ""}">${esc(row.status || "absent")}</span></label>
+      <div class="row"><input type="password" data-secret="${row.key}" autocomplete="off" placeholder="nouvelle valeur" style="flex:1">
+      <button class="small" data-set-secret="${row.key}">OK</button></div></div>`;
+  }
+  return `<div><label>${label}</label>${help}${setFieldInput(row)}</div>`;
+}
+
+async function loadSchemaSettings() {
+  const data = await api("GET", "/api/settings/schema");
+  schemaRows = data.items || [];
+  const byCat = {};
+  for (const row of schemaRows) (byCat[row.category] = byCat[row.category] || []).push(row);
+  $("set-schema").innerHTML = Object.keys(SET_CATS).filter((c) => byCat[c]).map((cat) => `
+    <div class="card"><h2>${SET_CATS[cat]}</h2>
+      <div class="grid c3">${byCat[cat].map(setFieldHtml).join("")}</div>
+      <div class="row" style="margin-top:12px">
+        <button class="small" data-cat="${cat}">Enregistrer — ${SET_CATS[cat]}</button></div>
+    </div>`).join("");
+
+  const overrides = schemaRows.filter((r) => r.override && !r.secret).length;
+  const note = $("set-restart");
+  note.classList.toggle("hidden", !overrides);
+  note.textContent = overrides
+    ? `${overrides} réglage(s) modifié(s) : pris en compte au prochain démarrage du serveur.` : "";
+
+  $("set-schema").querySelectorAll("button[data-set-secret]").forEach((btn) => {
+    btn.onclick = async () => {
+      const input = btn.closest(".row").querySelector("[data-secret]");
+      if (!input.value) return toast("Valeur requise", true);
+      try {
+        await api("POST", "/api/secrets/set", { key: btn.dataset.setSecret, value: input.value });
+        input.value = "";
+        toast("Secret enregistré");
+        await loadSchemaSettings();
+      } catch (err) { toast(err.message, true); }
+    };
+  });
+  $("set-schema").querySelectorAll("button[data-cat]").forEach((btn) => {
+    btn.onclick = async () => {
+      const box = btn.closest(".card");
+      let saved = 0;
+      try {
+        for (const inp of box.querySelectorAll("[data-key]")) {
+          const row = schemaRows.find((r) => r.key === inp.dataset.key);
+          if (!row) continue;
+          let value;
+          if (row.type === "int" || row.type === "float") value = inp.value === "" ? "" : Number(inp.value);
+          else if (row.type === "bool") value = inp.value === "true";
+          else if (row.type === "list[int]") value = inp.value.split(",").map((s) => s.trim()).filter(Boolean).map(Number);
+          else value = inp.value;
+          if (JSON.stringify(value) === JSON.stringify(row.value)) continue;
+          await api("POST", "/api/settings", { key: row.key, value, category: row.category });
+          saved += 1;
+        }
+      } catch (err) { return toast(err.message, true); }
+      toast(saved ? `${saved} réglage(s) enregistré(s)` : "Aucun changement");
+      if (saved) await loadSchemaSettings();
+    };
+  });
+}
+
+async function loadFreeSettings() {
+  const data = await api("GET", "/api/settings");
+  const schemaKeys = new Set(schemaRows.map((r) => r.key));
+  const items = (data.items || []).filter((i) => !schemaKeys.has(i.key));
+  const box = $("set-free");
+  const rows = items.map((item) => {
+    const value = typeof item.value === "string" ? item.value : JSON.stringify(item.value);
+    return [esc(item.key), `<textarea data-key="${esc(item.key)}" data-cat="${esc(item.category || "general")}">${esc(value)}</textarea>`,
+      `<div class="row"><button class="small" data-act="save" data-key="${esc(item.key)}">OK</button>` +
+      `<button class="small danger" data-act="del" data-key="${esc(item.key)}">Suppr</button></div>`];
+  });
+  box.innerHTML = rows.length ? table(["Clé", "Valeur", ""], rows)
+    : '<p class="muted">Aucune clé personnalisée.</p>';
+  box.querySelectorAll("button[data-act]").forEach((btn) => {
+    const key = btn.dataset.key;
+    btn.onclick = async () => {
+      try {
+        if (btn.dataset.act === "save") {
+          const ta = box.querySelector(`textarea[data-key="${key}"]`);
+          let value = ta.value;
+          try { value = JSON.parse(value); } catch (_) {}
+          await api("POST", "/api/settings", { key, value, category: ta.dataset.cat || "general" });
+          toast("Réglage enregistré");
+        } else {
+          await api("POST", "/api/settings/delete", { key });
+          toast("Supprimé");
+        }
+        await loadFreeSettings();
+      } catch (err) { toast(err.message, true); }
+    };
+  });
+}
+
+async function loadSettingsPage() {
+  await loadSchemaSettings();
+  await loadFreeSettings();
 }
 
 /* ---------- models ---------- */
@@ -769,11 +994,18 @@ async function loadWorkflows() {
       "<span class='mono'>" + esc(w.name) + "</span>",
       w.step_count + " · " + esc((w.steps || []).map((s) => s.kind + ":" + s.name).join(" → ")),
       "<div class='row'><button class='small' data-act='run' data-name='" + esc(w.name) + "'>Exécuter</button>" +
-      "<button class='small sec' data-act='edit' data-name='" + esc(w.name) + "'>Charger</button></div>",
+      "<button class='small sec' data-act='edit' data-name='" + esc(w.name) + "'>Charger</button>" +
+      "<button class='small danger' data-act='del' data-name='" + esc(w.name) + "'>Suppr</button></div>",
     ]));
   $("wf-list").querySelectorAll("button").forEach((btn) => {
     btn.onclick = async () => {
       try {
+        if (btn.dataset.act === "del") {
+          const res = await api("POST", "/api/workflows/delete", { name: btn.dataset.name });
+          toast(res.ok ? "Workflow supprimé" : "Workflow introuvable", !res.ok);
+          await loadWorkflows();
+          return;
+        }
         if (btn.dataset.act === "run") {
           const res = await api("POST", "/api/workflows/run", { name: btn.dataset.name });
           toast("Run #" + res.run_id + " démarré");
@@ -871,8 +1103,21 @@ $("job-del").onclick = async () => {
 async function loadMemory() {
   const data = await api("GET", "/api/memory?limit=25");
   $("mem-list").innerHTML = table(
-    ["Quand", "Fait"],
-    (data.items || []).map((f) => [esc(f.created_at), esc(f.text || f.content || JSON.stringify(f.value ?? ""))]));
+    ["Quand", "Fait", ""],
+    (data.items || []).map((f) => [
+      esc(f.created_at),
+      esc(f.text || f.content || JSON.stringify(f.value ?? "")),
+      "<button class='small danger' data-fact='" + f.id + "'>Suppr</button>",
+    ]));
+  $("mem-list").querySelectorAll("button[data-fact]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        const res = await api("POST", "/api/memory/delete", { id: Number(btn.dataset.fact) });
+        toast(res.ok ? "Fait supprimé" : "Fait introuvable", !res.ok);
+        await loadMemory();
+      } catch (err) { toast(err.message, true); }
+    };
+  });
 }
 async function loadLogs() {
   const data = await api("GET", "/api/incidents?limit=25");
@@ -880,6 +1125,66 @@ async function loadLogs() {
     ["Quand", "Type", "Message"],
     (data.items || []).map((i) => [esc(i.created_at), esc(i.kind || i.type || ""), esc(i.message || i.detail || "")]));
 }
+
+$("mission-go").onclick = async () => {
+  const prompt = $("mission-prompt").value.trim();
+  if (!prompt) return toast("Mission requise", true);
+  try {
+    const res = await api("POST", "/api/tasks/submit", { prompt });
+    $("mission-prompt").value = "";
+    toast("Mission #" + res.task_id + " soumise");
+    await loadOverview();
+  } catch (err) { toast(err.message, true); }
+};
+
+$("mem-add").onclick = async () => {
+  const text = $("mem-input").value.trim();
+  if (!text) return toast("Fait requis", true);
+  try {
+    await api("POST", "/api/memory/add", { text });
+    $("mem-input").value = "";
+    toast("Fait mémorisé");
+    await loadMemory();
+  } catch (err) { toast(err.message, true); }
+};
+
+$("logs-clear").onclick = async () => {
+  try {
+    const res = await api("POST", "/api/incidents/clear", {});
+    toast(res.deleted ? `${res.deleted} incident(s) effacé(s)` : "Aucun incident");
+    await loadLogs();
+  } catch (err) { toast(err.message, true); }
+};
+
+$("dr-create").onclick = async () => {
+  const content = $("dr-content").value.trim();
+  const platform = $("dr-platform").value.trim();
+  if (!platform) return toast("Plateforme requise", true);
+  if (!content) return toast("Contenu requis", true);
+  try {
+    const body = { platform, content };
+    const scheduled = $("dr-scheduled").value.trim();
+    if (scheduled) body.scheduled_for = scheduled;
+    const res = await api("POST", "/api/drafts/create", body);
+    $("dr-content").value = "";
+    toast("Brouillon #" + res.id + " créé");
+    await loadSocial();
+  } catch (err) { toast(err.message, true); }
+};
+
+$("fadd").onclick = async () => {
+  const key = $("fkey").value.trim();
+  if (!key) return toast("Clé requise", true);
+  let value = $("fval").value;
+  try { value = JSON.parse(value); } catch (_) {}
+  try {
+    await api("POST", "/api/settings", { key, value, category: $("fcat").value });
+    $("fkey").value = "";
+    $("fval").value = "";
+    toast("Réglage ajouté");
+    await loadFreeSettings();
+  } catch (err) { toast(err.message, true); }
+};
 
 boot();
 </script>

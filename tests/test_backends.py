@@ -163,7 +163,8 @@ def test_agent_api_exposes_and_validates_backends(settings, storage, notifier):
     server, runner = make_agent_server(settings, storage, notifier)
     try:
         base = f"http://127.0.0.1:{server.port}"
-        info = httpx.get(base + "/api/agent", timeout=5)
+        headers = auth_session(base)
+        info = httpx.get(base + "/api/agent", headers=headers, timeout=5)
         assert info.status_code == 200
         backends = {row["name"]: row for row in info.json()["backends"]}
         assert backends["smolagents"]["available"] is True
@@ -171,7 +172,6 @@ def test_agent_api_exposes_and_validates_backends(settings, storage, notifier):
         assert backends["smolclaw"]["available"] is False
         assert backends["smolclaw"]["reason"]
 
-        headers = auth_session(base)
         saved = httpx.post(
             base + "/api/agent",
             json={"backend": "smolagents", "max_steps": 6},

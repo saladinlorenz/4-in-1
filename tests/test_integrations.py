@@ -208,7 +208,7 @@ def test_integration_test_endpoints(settings, storage, notifier):
         base = f"http://127.0.0.1:{server.port}"
         headers = auth_session(base)
 
-        listing = httpx.get(base + "/api/integrations", timeout=5)
+        listing = httpx.get(base + "/api/integrations", headers=headers, timeout=5)
         assert listing.status_code == 200
         assert {row["name"] for row in listing.json()["items"]} == {
             "telegram",

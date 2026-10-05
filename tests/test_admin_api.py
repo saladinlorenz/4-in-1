@@ -59,7 +59,7 @@ def test_settings_crud_requires_session(settings, storage, notifier):
         )
         assert done.status_code == 200
 
-        listing = httpx.get(base + "/api/settings?category=general", timeout=5)
+        listing = httpx.get(base + "/api/settings?category=general", headers=headers, timeout=5)
         assert listing.status_code == 200
         items = listing.json()["items"]
         assert any(item["key"] == "instance_name" for item in items)
@@ -111,7 +111,7 @@ def test_secrets_api_never_returns_values(settings, storage, notifier):
         )
         assert done.status_code == 200
 
-        listing = httpx.get(base + "/api/secrets", timeout=5)
+        listing = httpx.get(base + "/api/secrets", headers=headers, timeout=5)
         assert listing.status_code == 200
         assert value not in listing.text
         item = next(i for i in listing.json()["items"] if i["key"] == "GITHUB_TOKEN")
@@ -125,7 +125,7 @@ def test_secrets_api_never_returns_values(settings, storage, notifier):
             timeout=5,
         )
         assert removed.json() == {"ok": True}
-        listing2 = httpx.get(base + "/api/secrets", timeout=5)
+        listing2 = httpx.get(base + "/api/secrets", headers=headers, timeout=5)
         assert '"absent"' in listing2.text
     finally:
         server.stop()
@@ -158,7 +158,7 @@ def test_llm_endpoints_api_crud_hot_reload(settings, storage, notifier):
         assert API_KEY not in created.text
         assert [e.model for e in router.endpoints] == ["m1"]  # live reload
 
-        listing = httpx.get(base + "/api/llm/endpoints", timeout=5)
+        listing = httpx.get(base + "/api/llm/endpoints", headers=headers, timeout=5)
         assert listing.status_code == 200
         assert API_KEY not in listing.text
         assert len(listing.json()["items"]) == 1
@@ -211,7 +211,9 @@ def test_llm_endpoints_api_crud_hot_reload(settings, storage, notifier):
         )
         assert deleted.json() == {"ok": True}
         assert router.endpoints == []
-        assert httpx.get(base + "/api/llm/endpoints", timeout=5).json()["items"] == []
+        assert httpx.get(
+            base + "/api/llm/endpoints", headers=headers, timeout=5
+        ).json()["items"] == []
     finally:
         server.stop()
         runner.shutdown()

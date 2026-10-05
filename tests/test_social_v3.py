@@ -304,7 +304,7 @@ def test_social_api_endpoints(settings, storage, notifier):
         base = f"http://127.0.0.1:{server.port}"
         headers = auth_session(base)
 
-        listing = httpx.get(base + "/api/social", timeout=5)
+        listing = httpx.get(base + "/api/social", headers=headers, timeout=5)
         assert listing.status_code == 200
         payload = listing.json()
         platforms = {a["platform"] for a in payload["adapters"]}

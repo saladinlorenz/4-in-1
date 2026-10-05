@@ -1,4 +1,13 @@
-from .bot import HELP_TEXT, build_application, format_status, format_tasks, register_handlers
+from .bot import (
+    HELP_TEXT,
+    build_application,
+    format_memory,
+    format_status,
+    format_task,
+    format_tasks,
+    format_workflows,
+    register_handlers,
+)
 from .notifier import FnNotifier, LogNotifier, TelegramNotifier
 
 __all__ = [
@@ -7,7 +16,10 @@ __all__ = [
     "LogNotifier",
     "TelegramNotifier",
     "build_application",
+    "format_memory",
     "format_status",
+    "format_task",
     "format_tasks",
+    "format_workflows",
     "register_handlers",
 ]

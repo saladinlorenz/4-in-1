@@ -65,7 +65,7 @@ def test_setup_login_and_write_gating(settings, storage, notifier):
         assert token and csrf
         assert PASSWORD not in login.text
 
-        read = httpx.get(base + "/api/tasks", timeout=5)
+        read = httpx.get(base + "/api/tasks", headers={"Cookie": f"agentos_session={token}"}, timeout=5)
         assert read.status_code == 200
 
         denied = httpx.post(base + "/api/tasks/1/cancel", timeout=5)

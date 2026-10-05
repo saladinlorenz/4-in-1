@@ -352,6 +352,11 @@ class Storage:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def clear_incidents(self) -> int:
+        with self._conn() as connection:
+            cursor = connection.execute("DELETE FROM incidents")
+            return max(0, cursor.rowcount)
+
     def remember(self, text: str, source: str = "agent") -> int:
         with self._conn() as connection:
             cursor = connection.execute(
@@ -383,6 +388,11 @@ class Storage:
             "SELECT * FROM memory ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def delete_fact(self, fact_id: int) -> bool:
+        with self._conn() as connection:
+            cursor = connection.execute("DELETE FROM memory WHERE id = ?", (fact_id,))
+            return cursor.rowcount > 0
 
     def create_draft(self, platform: str, content: str, scheduled_for: str | None = None) -> int:
         with self._conn() as connection:
@@ -574,6 +584,14 @@ class Storage:
     def list_workflows(self) -> list[dict[str, Any]]:
         rows = self._conn().execute("SELECT * FROM workflows ORDER BY id").fetchall()
         return [dict(row) for row in rows]
+
+    def delete_workflow(self, name: str) -> bool:
+        with self._conn() as connection:
+            cursor = connection.execute("DELETE FROM workflows WHERE name = ?", (name,))
+            if cursor.rowcount == 0:
+                return False
+            connection.execute("DELETE FROM scheduled_jobs WHERE workflow_name = ?", (name,))
+            return True
 
     def create_run(
         self,
